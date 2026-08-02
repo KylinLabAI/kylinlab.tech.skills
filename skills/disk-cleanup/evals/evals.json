@@ -1,0 +1,41 @@
+{
+  "skill_name": "disk-cleanup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "My Mac says the startup disk is almost full. Clean useless temp files and caches, but don't delete my personal files.",
+      "expected_output": "The agent checks macOS storage/free space, runs the storage cleanup helper in dry-run mode first, explains safe cache/temp/log targets, asks or uses explicit approval before applying deletion, avoids Downloads/Documents/media/user data, and reports reclaimed space.",
+      "files": [],
+      "expectations": [
+        "Detects or assumes macOS only after checking the host platform.",
+        "Runs or proposes the bundled helper in dry-run mode before deletion.",
+        "Limits cleanup to allowlisted temp, cache, log, crash, or explicitly approved developer/trash targets.",
+        "Does not manually delete Time Machine snapshots, system folders, Downloads, Documents, Photos, Mail, Messages, or app data."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "C drive is nearly full on Windows. Can you clear temp files and whatever Windows says is safe?",
+      "expected_output": "The agent uses Windows Storage Sense/Cleanup recommendations/Disk Cleanup guidance, optionally runs the helper for per-user temp/cache dry-run cleanup, warns about Windows.old rollback implications, and does not manually delete Windows system directories.",
+      "files": [],
+      "expectations": [
+        "Prefers Storage Sense, Cleanup recommendations, or Disk Cleanup for Windows system cleanup.",
+        "Uses dry-run before direct filesystem cleanup.",
+        "Warns before deleting Windows.old or rollback files.",
+        "Avoids manual deletion from C:\\Windows, WinSxS, Program Files, OneDrive offline content, and user profile data."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "I'm a developer and Docker, npm, pip, pnpm, conda, Homebrew, and Xcode caches are eating disk. Clean what is safe.",
+      "expected_output": "The agent uses package-manager cleanup commands with dry-run or safer previews where available, includes developer cache scanning only after approval, avoids Docker volumes unless explicitly confirmed, and reports tradeoffs such as slower rebuilds or package redownloads.",
+      "files": [],
+      "expectations": [
+        "Uses package-manager specific commands such as npm cache verify, pip cache purge, pnpm store prune, conda clean --dry-run, and brew cleanup --dry-run when available.",
+        "Treats Docker volumes as data-risky and does not include --volumes without explicit confirmation.",
+        "Includes developer cache cleanup only with the relevant flag or approval.",
+        "Explains that package caches and build artifacts can regenerate and may slow future installs or builds."
+      ]
+    }
+  ]
+}

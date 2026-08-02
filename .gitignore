@@ -1,0 +1,35 @@
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+.env
+
+# ── Generated / runtime artifacts ────────────────────────────────────────
+# scan_machine.py backs up the previous registry before overwriting it
+skills/laptop-setup/configs/apps.yaml.bak
+
+# workspace-setup: generated per-user workspace configs (contain repo remotes)
+skills/workspace-setup/configs/
+
+# Per-user local registries generated with --output ~/my-tools.yaml etc.
+# (uncomment if you keep them inside the repo)
+# my-tools.yaml
+
+# ── OS / editor noise ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+
+# ── IDE / agent local state (outside repo, listed for clarity) ───────────
+# ~/.laptop-setup/ is the skill's runtime dir and lives in the user home,
+# not in this repo, so it does not need to be ignored here.
+
+# Note: external-skills/ is ignored by its own nested .gitignore
+# (everything except README.md and .gitignore).

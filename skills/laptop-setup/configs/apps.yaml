@@ -1,0 +1,592 @@
+# =============================================================================
+# Laptop Setup – Application Registry
+# =============================================================================
+# Each app entry uses a flat key structure for easy parsing:
+#
+#   name              – Display name
+#   description       – Short description
+#   profiles          – Optional profile tags such as [baseline, web, java]
+#   bootstrap         – Optional true/false; install before non-bootstrap apps
+#   platforms         – Inline list: [macos, windows, linux]
+#   check_command     – Generic CLI command to detect (all platforms)
+#   check_commands    – Generic CLI command list; any command detects the app
+#   check_shell       – Generic shell command; exit 0 detects the app
+#   check_path        – Generic file/dir path to detect
+#   check_paths       – Generic file/dir path list; any path detects the app
+#   check_<os>_path   – Platform-specific file/dir path to detect
+#   check_<os>_paths  – Platform-specific file/dir path list
+#   check_<os>_command – Platform-specific CLI command to detect
+#   check_<os>_shell  – Platform-specific shell command; exit 0 detects app
+#   install_<os>      – Install command for that platform
+#   install_linux_<pm> – Linux package-manager-specific command (apt/dnf/snap)
+#   install_linux_custom – Linux fallback install command
+#   install_<os>_note – Post-install note shown to user
+#   post_install_<os> – List of commands to run after install (or --setup)
+#   verify_<os>       – List of {label, command} pairs for --verify checks
+# =============================================================================
+
+settings:
+  ensure_package_manager: true
+  log_file: "laptop_setup.log"
+
+apps:
+
+  # ── Containers ──────────────────────────────────────────────────────────
+  - name: Docker Desktop
+    description: Docker Desktop container runtime and GUI
+    profiles: [containers]
+    platforms: [macos, windows]
+    check_macos_path: "/Applications/Docker.app"
+    check_windows_path: "%PROGRAMFILES%\\Docker\\Docker\\Docker Desktop.exe"
+    install_macos: "brew install --cask docker"
+    install_windows: "winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements"
+    install_macos_note: "After install, launch Docker.app once to finish privileged helper and virtualization setup."
+    install_windows_note: "After install, launch Docker Desktop once to finish WSL 2/backend setup if prompted."
+
+  # ── AI & Runtime Tools ─────────────────────────────────────────────────
+  - name: Node.js
+    description: JavaScript runtime and npm package manager
+    profiles: [baseline, web, ai]
+    platforms: [macos, windows, linux]
+    check_command: node
+    install_macos: "brew install node"
+    install_windows: "winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y nodejs npm"
+    install_linux_dnf: "sudo dnf install -y nodejs npm"
+    install_linux_snap: "sudo snap install node --classic"
+    install_linux_note: "Some Linux distro packages may lag the latest LTS. Copilot CLI requires Node.js 22+ when installed through npm."
+    # Configure npm registry auth. Provide NPM_TOKEN via --credentials-file
+    # for headless setup of the public npm registry; otherwise run
+    # `npm login` interactively. Override NPM_REGISTRY for a private
+    # registry (default: https://registry.npmjs.org/).
+    configure_macos:
+      - name: "Authenticate npm registry"
+        check: "npm whoami >/dev/null 2>&1"
+        interactive: "npm login"
+        non_interactive: "npm config set //${NPM_REGISTRY:-registry.npmjs.org}/:_authToken \"$NPM_TOKEN\""
+        requires: [NPM_TOKEN]
+        sensitive: true
+    configure_linux:
+      - name: "Authenticate npm registry"
+        check: "npm whoami >/dev/null 2>&1"
+        interactive: "npm login"
+        non_interactive: "npm config set //${NPM_REGISTRY:-registry.npmjs.org}/:_authToken \"$NPM_TOKEN\""
+        requires: [NPM_TOKEN]
+        sensitive: true
+    configure_windows:
+      - name: "Authenticate npm registry"
+        check: "npm whoami >NUL 2>&1"
+        interactive: "npm login"
+        non_interactive: "npm config set //registry.npmjs.org/:_authToken \"%NPM_TOKEN%\""
+        requires: [NPM_TOKEN]
+        sensitive: true
+
+  - name: ClaudeCode
+    description: Claude Code terminal coding assistant
+    profiles: [ai]
+    platforms: [macos, windows, linux]
+    check_command: claude
+    install_macos: "brew install --cask claude-code"
+    install_windows: "winget install -e --id Anthropic.ClaudeCode --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo install -d -m 0755 /etc/apt/keyrings && sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc && echo 'deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main' | sudo tee /etc/apt/sources.list.d/claude-code.list >/dev/null && sudo apt update && sudo apt install -y claude-code"
+    install_linux_dnf: "printf '[claude-code]\\nname=Claude Code\\nbaseurl=https://downloads.claude.ai/claude-code/rpm/stable\\nenabled=1\\ngpgcheck=1\\ngpgkey=https://downloads.claude.ai/keys/claude-code.asc\\n' | sudo tee /etc/yum.repos.d/claude-code.repo >/dev/null && sudo dnf install -y claude-code"
+    install_macos_note: "After install, run 'claude' or 'claude doctor' to authenticate and verify setup."
+    install_windows_note: "After install, run 'claude' or 'claude doctor' to authenticate and verify setup."
+    install_linux_note: "The official Linux packages use Anthropic's signed apt/dnf repositories."
+    # Provide ANTHROPIC_API_KEY via --credentials-file for headless auth.
+    # Without it, the interactive `claude` flow is used.
+    configure_macos:
+      - name: "Authenticate Claude Code"
+        check: "claude doctor 2>/dev/null | grep -qi 'authenticated\\|ok'"
+        interactive: "claude"
+        non_interactive: "claude doctor"
+        requires: [ANTHROPIC_API_KEY]
+        sensitive: true
+    configure_linux:
+      - name: "Authenticate Claude Code"
+        check: "claude doctor 2>/dev/null | grep -qi 'authenticated\\|ok'"
+        interactive: "claude"
+        non_interactive: "claude doctor"
+        requires: [ANTHROPIC_API_KEY]
+        sensitive: true
+    configure_windows:
+      - name: "Authenticate Claude Code"
+        check: "claude doctor 2>NUL | findstr /i \"authenticated ok\""
+        interactive: "claude"
+        non_interactive: "claude doctor"
+        requires: [ANTHROPIC_API_KEY]
+        sensitive: true
+
+  - name: Codex
+    description: OpenAI Codex CLI coding agent
+    profiles: [ai]
+    platforms: [macos, windows, linux]
+    check_command: codex
+    install_macos: "npm install -g @openai/codex"
+    install_windows: "npm install -g @openai/codex"
+    install_linux_custom: "npm install -g @openai/codex"
+    install_macos_note: "Requires Node.js/npm. After install, run 'codex --login' or configure OPENAI_API_KEY."
+    install_windows_note: "Requires Node.js/npm. Windows support may require WSL depending on the local setup; run 'codex --login' after install."
+    install_linux_note: "Requires Node.js/npm. After install, run 'codex --login' or configure OPENAI_API_KEY."
+    # Provide OPENAI_API_KEY via --credentials-file for headless auth; the
+    # Codex CLI reads it from the environment and skips the login prompt.
+    configure_macos:
+      - name: "Authenticate Codex"
+        check: "codex auth status >/dev/null 2>&1 || [ -n \"$OPENAI_API_KEY\" ]"
+        interactive: "codex --login"
+        non_interactive: "codex auth status >/dev/null 2>&1 || true"
+        requires: [OPENAI_API_KEY]
+        sensitive: true
+    configure_linux:
+      - name: "Authenticate Codex"
+        check: "codex auth status >/dev/null 2>&1 || [ -n \"$OPENAI_API_KEY\" ]"
+        interactive: "codex --login"
+        non_interactive: "codex auth status >/dev/null 2>&1 || true"
+        requires: [OPENAI_API_KEY]
+        sensitive: true
+    configure_windows:
+      - name: "Authenticate Codex"
+        check: "codex auth status >NUL 2>&1"
+        interactive: "codex --login"
+        non_interactive: "codex auth status >NUL 2>&1"
+        requires: [OPENAI_API_KEY]
+        sensitive: true
+
+  - name: Copilot CLI
+    description: GitHub Copilot terminal coding assistant
+    profiles: [ai]
+    platforms: [macos, windows, linux]
+    check_command: copilot
+    install_macos: "brew install copilot-cli"
+    install_windows: "winget install -e --id GitHub.Copilot --accept-package-agreements --accept-source-agreements"
+    install_linux_custom: "if command -v brew >/dev/null 2>&1; then brew install copilot-cli; else npm install -g @github/copilot; fi"
+    install_macos_note: "After install, run 'copilot' and use /login to authenticate with GitHub."
+    install_windows_note: "After install, run 'copilot' and use /login to authenticate with GitHub."
+    install_linux_note: "Uses Homebrew on Linux when available, otherwise npm. The npm package requires Node.js 22+."
+    # Provide GITHUB_TOKEN via --credentials-file for headless auth; Copilot
+    # CLI honours it and skips the /login flow.
+    configure_macos:
+      - name: "Authenticate Copilot CLI"
+        check: "test -n \"$GITHUB_TOKEN\" || copilot --version >/dev/null 2>&1 && test -f \"$HOME/.config/github-copilot/hosts.json\""
+        interactive: "copilot"
+        non_interactive: "copilot --version"
+        requires: [GITHUB_TOKEN]
+        sensitive: true
+    configure_linux:
+      - name: "Authenticate Copilot CLI"
+        check: "test -n \"$GITHUB_TOKEN\" || copilot --version >/dev/null 2>&1 && test -f \"$HOME/.config/github-copilot/hosts.json\""
+        interactive: "copilot"
+        non_interactive: "copilot --version"
+        requires: [GITHUB_TOKEN]
+        sensitive: true
+    configure_windows:
+      - name: "Authenticate Copilot CLI"
+        check: "copilot --version >NUL 2>&1"
+        interactive: "copilot"
+        non_interactive: "copilot --version"
+        requires: [GITHUB_TOKEN]
+        sensitive: true
+
+  # ── AI Coding IDEs ──────────────────────────────────────────────────────
+  - name: TRAE
+    description: TRAE AI-native coding IDE
+    profiles: [ai, ide]
+    platforms: [macos, windows, linux]
+    check_macos_path: "/Applications/Trae.app"
+    check_windows_path: "%LOCALAPPDATA%\\Programs\\trae\\Trae.exe"
+    check_linux_path: "/usr/bin/trae"
+    install_macos: "brew install --cask trae"
+    install_windows: "winget install -e --id ByteDance.TRAE --accept-package-agreements --accept-source-agreements"
+    install_linux_custom: "curl -fsSL https://trae.ai/install-linux.sh | sh"
+    install_macos_note: "After install, launch Trae.app once to finish first-run setup."
+    install_windows_note: "After install, launch Trae.exe once to finish first-run setup."
+
+  - name: TRAE-CLI
+    description: TRAE command-line interface for terminal coding
+    profiles: [ai, ide]
+    platforms: [macos, windows, linux]
+    check_command: trae
+    install_macos: "npm install -g @trae/cli"
+    install_windows: "npm install -g @trae/cli"
+    install_linux_custom: "npm install -g @trae/cli"
+    install_macos_note: "Requires Node.js/npm. After install, run 'trae' to verify."
+    install_windows_note: "Requires Node.js/npm. After install, run 'trae' to verify."
+    install_linux_note: "Requires Node.js/npm. After install, run 'trae' to verify."
+
+  - name: CodeBuddy
+    description: CodeBuddy AI programming assistant IDE
+    profiles: [ai, ide]
+    platforms: [macos, windows, linux]
+    check_macos_path: "/Applications/CodeBuddy.app"
+    check_windows_path: "%LOCALAPPDATA%\\Programs\\codebuddy\\CodeBuddy.exe"
+    check_linux_path: "/usr/bin/codebuddy"
+    install_macos: "brew install --cask codebuddy"
+    install_windows: "winget install -e --id Tencent.CodeBuddy --accept-package-agreements --accept-source-agreements"
+    install_linux_custom: "curl -fsSL https://codebuddy.ai/install-linux.sh | sh"
+    install_macos_note: "After install, launch CodeBuddy.app once to finish first-run setup."
+    install_windows_note: "After install, launch CodeBuddy.exe once to finish first-run setup."
+
+  - name: CodeBuddy-CLI
+    description: CodeBuddy command-line interface for terminal coding
+    profiles: [ai, ide]
+    platforms: [macos, windows, linux]
+    check_command: codebuddy
+    install_macos: "npm install -g @codebuddy/cli"
+    install_windows: "npm install -g @codebuddy/cli"
+    install_linux_custom: "npm install -g @codebuddy/cli"
+    install_macos_note: "Requires Node.js/npm. After install, run 'codebuddy' to verify."
+    install_windows_note: "Requires Node.js/npm. After install, run 'codebuddy' to verify."
+    install_linux_note: "Requires Node.js/npm. After install, run 'codebuddy' to verify."
+
+  - name: Qoder
+    description: Qoder AI coding IDE by Tencent
+    profiles: [ai, ide]
+    platforms: [macos, windows, linux]
+    check_macos_path: "/Applications/Qoder.app"
+    check_windows_path: "%LOCALAPPDATA%\\Programs\\qoder\\Qoder.exe"
+    check_linux_path: "/usr/bin/qoder"
+    install_macos: "brew install --cask qoder"
+    install_windows: "winget install -e --id Tencent.Qoder --accept-package-agreements --accept-source-agreements"
+    install_linux_custom: "curl -fsSL https://qoder.ai/install-linux.sh | sh"
+    install_macos_note: "After install, launch Qoder.app once to finish first-run setup."
+    install_windows_note: "After install, launch Qoder.exe once to finish first-run setup."
+
+  - name: Qoder-CLI
+    description: Qoder command-line interface for terminal coding
+    profiles: [ai, ide]
+    platforms: [macos, windows, linux]
+    check_command: qoder
+    install_macos: "npm install -g @qoder/cli"
+    install_windows: "npm install -g @qoder/cli"
+    install_linux_custom: "npm install -g @qoder/cli"
+    install_macos_note: "Requires Node.js/npm. After install, run 'qoder' to verify."
+    install_windows_note: "Requires Node.js/npm. After install, run 'qoder' to verify."
+    install_linux_note: "Requires Node.js/npm. After install, run 'qoder' to verify."
+
+  # ── Build & Language Runtimes ──────────────────────────────────────────
+  - name: Python
+    description: Python 3 language runtime and package tooling
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: python3
+    check_windows_command: python
+    install_macos: "brew install python"
+    install_windows: "winget install -e --id Python.Python.3 --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y python3 python3-pip python3-venv"
+    install_linux_dnf: "sudo dnf install -y python3 python3-pip"
+    install_linux_snap: "sudo snap install python --classic"
+
+  - name: CMake
+    description: Cross-platform build system generator
+    profiles: [build]
+    platforms: [macos, windows, linux]
+    check_command: cmake
+    install_macos: "brew install cmake"
+    install_windows: "winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y cmake"
+    install_linux_dnf: "sudo dnf install -y cmake"
+    install_linux_snap: "sudo snap install cmake --classic"
+
+  - name: openjdk@21
+    description: OpenJDK 21 development kit for Java
+    profiles: [java]
+    platforms: [macos, windows, linux]
+    check_macos_paths: ["/opt/homebrew/opt/openjdk@21/bin/java", "/usr/local/opt/openjdk@21/bin/java"]
+    check_windows_command: java
+    check_linux_command: java
+    install_macos: "brew install openjdk@21"
+    install_windows: "winget install -e --id Microsoft.OpenJDK.21 --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y openjdk-21-jdk"
+    install_linux_dnf: "sudo dnf install -y java-21-openjdk-devel"
+    install_macos_note: "Homebrew installs openjdk@21 as a keg-only formula. To expose it to system Java tools, follow 'brew info openjdk@21'."
+
+  - name: maven
+    description: Apache Maven Java build and dependency management tool
+    profiles: [java]
+    platforms: [macos, windows, linux]
+    check_command: mvn
+    install_macos: "brew install maven"
+    install_windows: "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Get-Command scoop -ErrorAction SilentlyContinue) { scoop install maven } elseif (Get-Command choco -ErrorAction SilentlyContinue) { choco install maven -y } else { Write-Error 'Install Scoop or Chocolatey first, then install Maven'; exit 1 }\""
+    install_linux_apt: "sudo apt install -y maven"
+    install_linux_dnf: "sudo dnf install -y maven"
+    install_windows_note: "Maven is not consistently available through winget; this command uses Scoop or Chocolatey if present."
+
+  - name: ripgrep
+    description: Fast recursive text search tool (rg)
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: rg
+    install_macos: "brew install ripgrep"
+    install_windows: "winget install -e --id BurntSushi.ripgrep.MSVC --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y ripgrep"
+    install_linux_dnf: "sudo dnf install -y ripgrep"
+
+  - name: p7zip
+    description: 7-Zip compatible file archiver CLI
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: 7z
+    check_windows_path: "%PROGRAMFILES%\\7-Zip\\7z.exe"
+    install_macos: "brew install p7zip"
+    install_windows: "winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y p7zip-full"
+    install_linux_dnf: "sudo dnf install -y p7zip p7zip-plugins"
+
+  - name: openssl
+    description: OpenSSL cryptography and TLS toolkit
+    profiles: [baseline, build]
+    platforms: [macos, windows, linux]
+    check_macos_paths: ["/opt/homebrew/opt/openssl@3/bin/openssl", "/usr/local/opt/openssl@3/bin/openssl"]
+    check_windows_command: openssl
+    check_linux_command: openssl
+    install_macos: "brew install openssl@3"
+    install_windows: "winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y openssl"
+    install_linux_dnf: "sudo dnf install -y openssl"
+    install_macos_note: "Homebrew installs openssl@3 as a keg-only formula; use its opt path when a build needs this OpenSSL specifically."
+
+  - name: jq
+    description: JSON validation and command-line inspection
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: jq
+    install_macos: "brew install jq"
+    install_windows: "winget install -e --id jqlang.jq --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y jq"
+    install_linux_dnf: "sudo dnf install -y jq"
+
+  # ── Media & Video Tools ────────────────────────────────────────────────
+  - name: FFmpeg
+    description: Video and audio conversion, recording, and processing toolkit
+    profiles: [media]
+    platforms: [macos, windows, linux]
+    check_command: ffmpeg
+    install_macos: "brew install ffmpeg"
+    install_windows: "winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y ffmpeg"
+    install_linux_dnf: "sudo dnf install -y ffmpeg"
+    install_linux_snap: "sudo snap install ffmpeg"
+
+  - name: 剪映专业版
+    description: Jianying Pro / VideoFusion desktop video editor
+    profiles: [media]
+    platforms: [macos, windows]
+    check_macos_path: "/Applications/VideoFusion-macOS.app"
+    check_windows_path: "%LOCALAPPDATA%\\JianyingPro\\Apps\\JianyingPro.exe"
+    install_macos: "brew install --cask videofusion"
+    install_windows: "winget install -e --id ByteDance.JianyingPro --accept-package-agreements --accept-source-agreements"
+    install_macos_note: "Homebrew installs the Chinese desktop editor as VideoFusion-macOS.app."
+    install_windows_note: "Winget installs the Jianying Pro desktop editor for the current user."
+
+  # ── Networking ──────────────────────────────────────────────────────────
+  - name: Wireshark
+    description: Network protocol analyzer
+    profiles: [networking]
+    platforms: [macos, windows, linux]
+    check_command: tshark
+    check_macos_path: "/Applications/Wireshark.app"
+    install_macos: "brew install --cask wireshark"
+    install_windows: "winget install -e --id WiresharkFoundation.Wireshark --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y wireshark"
+    install_linux_dnf: "sudo dnf install -y wireshark"
+
+  - name: mitmproxy
+    description: Interactive HTTPS proxy for inspection and debugging
+    profiles: [networking]
+    platforms: [macos, windows, linux]
+    check_command: mitmproxy
+    install_macos: "brew install --cask mitmproxy"
+    install_windows: "winget install -e --id mitmproxy.mitmproxy --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y mitmproxy"
+    install_linux_dnf: "sudo dnf install -y mitmproxy"
+    install_macos_note: "After install, run 'mitmproxy' once to initialize certificates if browser interception is needed."
+    install_windows_note: "After install, run 'mitmproxy' once to initialize certificates if browser interception is needed."
+    install_linux_note: "After install, run 'mitmproxy' once to initialize certificates if browser interception is needed."
+
+  # ── Virtualisation ─────────────────────────────────────────────────────
+  - name: UTM
+    description: Virtual machine host for macOS
+    profiles: [virtualization]
+    platforms: [macos]
+    check_macos_path: "/Applications/UTM.app"
+    install_macos: "brew install --cask utm"
+
+  # ── IDEs & Editors ─────────────────────────────────────────────────────
+  - name: Android Studio
+    description: Android development IDE
+    profiles: [mobile, android]
+    platforms: [macos, windows, linux]
+    check_macos_path: "/Applications/Android Studio.app"
+    check_linux_command: android-studio
+    install_macos: "brew install --cask android-studio"
+    install_windows: "winget install -e --id Google.AndroidStudio --accept-package-agreements --accept-source-agreements"
+    install_linux_snap: "sudo snap install android-studio --classic"
+    install_macos_note: "Post-install configures: SDK cmdline-tools, platform-tools, emulator, Android 15 (API 35) system image, default Pixel AVD, and ANDROID_HOME in .zshrc."
+    post_install_macos:
+      - "brew install --cask android-commandlinetools"
+      - "export ANDROID_HOME=\"$HOME/Library/Android/sdk\" && mkdir -p \"$ANDROID_HOME\" && yes | \"$(brew --prefix)/share/android-commandlinetools/cmdline-tools/bin/sdkmanager\" --sdk_root=\"$ANDROID_HOME\" --licenses > /dev/null 2>&1"
+      - "export ANDROID_HOME=\"$HOME/Library/Android/sdk\" && \"$(brew --prefix)/share/android-commandlinetools/cmdline-tools/bin/sdkmanager\" --sdk_root=\"$ANDROID_HOME\" \"cmdline-tools;latest\" \"platform-tools\" \"emulator\" \"build-tools;35.0.0\" \"platforms;android-35\" \"system-images;android-35;google_apis;arm64-v8a\""
+      - "export ANDROID_HOME=\"$HOME/Library/Android/sdk\" && echo no | \"$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager\" create avd -n default_pixel -k \"system-images;android-35;google_apis;arm64-v8a\" -d \"pixel_6\" --force"
+      - "grep -q 'ANDROID_HOME' ~/.zshrc 2>/dev/null || (echo '' >> ~/.zshrc && echo '# Android SDK' >> ~/.zshrc && echo 'export ANDROID_HOME=\"$HOME/Library/Android/sdk\"' >> ~/.zshrc && echo 'export PATH=\"$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH\"' >> ~/.zshrc)"
+    verify_macos:
+      - label: "Android Studio"
+        command: "ls -d '/Applications/Android Studio.app' 2>/dev/null && echo 'Installed' || echo 'Not installed'"
+      - label: "ANDROID_HOME"
+        command: "echo \"${ANDROID_HOME:-not set}\""
+      - label: "SDK packages"
+        command: "ls ~/Library/Android/sdk/ 2>/dev/null || echo 'SDK not found'"
+      - label: "SDK cmdline-tools"
+        command: "ls ~/Library/Android/sdk/cmdline-tools/ 2>/dev/null || echo 'Not installed'"
+      - label: "System images"
+        command: "find ~/Library/Android/sdk/system-images -mindepth 3 -maxdepth 3 -type d 2>/dev/null | sed 's|.*/system-images/||' || echo 'None'"
+      - label: "AVDs (emulators)"
+        command: "~/Library/Android/sdk/emulator/emulator -list-avds 2>/dev/null || echo 'Emulator not installed'"
+      - label: "Emulator binary"
+        command: "ls ~/Library/Android/sdk/emulator/emulator 2>/dev/null && echo 'Present' || echo 'Not found'"
+
+  - name: Visual Studio Code
+    description: Code editor
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: code
+    check_macos_path: "/Applications/Visual Studio Code.app"
+    install_macos: "brew install --cask visual-studio-code"
+    install_windows: "winget install -e --id Microsoft.VisualStudioCode --accept-package-agreements --accept-source-agreements"
+    install_linux_snap: "sudo snap install code --classic"
+
+  - name: Xcode
+    description: Apple development IDE & toolchain
+    profiles: [mobile, ios]
+    platforms: [macos]
+    check_macos_path: "/Applications/Xcode.app"
+    install_macos: "xcode-select --install"
+    install_macos_note: "Post-install installs full Xcode via App Store (mas), accepts license, runs first-launch setup, and downloads the iOS Simulator runtime."
+    post_install_macos:
+      - "command -v mas >/dev/null 2>&1 || brew install mas"
+      - "test -d /Applications/Xcode.app || mas install 497799835 || echo 'Auto-install failed — please install Xcode manually from App Store'"
+      - "test -d /Applications/Xcode.app && sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || true"
+      - "test -d /Applications/Xcode.app && sudo xcodebuild -license accept || true"
+      - "test -d /Applications/Xcode.app && xcodebuild -runFirstLaunch || true"
+      - "test -d /Applications/Xcode.app && xcodebuild -downloadPlatform iOS || echo 'iOS Simulator requires full Xcode from App Store'"
+    verify_macos:
+      - label: "Xcode version"
+        command: "xcodebuild -version 2>/dev/null | head -1 || echo 'Not installed'"
+      - label: "Active developer dir"
+        command: "xcode-select -p 2>/dev/null || echo 'Not set'"
+      - label: "iOS Simulator runtimes"
+        command: "xcrun simctl list runtimes 2>/dev/null | grep -E '^(iOS|== )' || echo 'None (simctl not available)'"
+      - label: "iOS Simulator devices"
+        command: "xcrun simctl list devices available 2>/dev/null | grep -E '(^--|  )' | head -20 || echo 'None'"
+
+  - name: Visual Studio Professional
+    description: Microsoft IDE (C++/C#/.NET)
+    profiles: [windows, build]
+    platforms: [windows]
+    check_command: devenv
+    check_windows_path: "%PROGRAMFILES%\\Microsoft Visual Studio\\2022\\Professional\\Common7\\IDE\\devenv.exe"
+    install_windows: "winget install -e --id Microsoft.VisualStudio.2022.Professional --accept-package-agreements --accept-source-agreements"
+
+  # ── Browsers ────────────────────────────────────────────────────────────
+  - name: Google Chrome
+    description: Web browser
+    profiles: [browsers, baseline]
+    platforms: [macos, windows, linux]
+    check_macos_path: "/Applications/Google Chrome.app"
+    check_linux_command: google-chrome
+    install_macos: "brew install --cask google-chrome"
+    install_windows: "winget install -e --id Google.Chrome --accept-package-agreements --accept-source-agreements"
+    install_linux_custom: "wget -qO /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo dpkg -i /tmp/chrome.deb && sudo apt-get install -f -y"
+
+  - name: Firefox
+    description: Mozilla Firefox web browser
+    profiles: [browsers]
+    platforms: [macos, windows, linux]
+    check_macos_path: "/Applications/Firefox.app"
+    check_linux_command: firefox
+    install_macos: "brew install --cask firefox"
+    install_windows: "winget install -e --id Mozilla.Firefox --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y firefox"
+    install_linux_dnf: "sudo dnf install -y firefox"
+    install_linux_snap: "sudo snap install firefox"
+
+  # ── Version Control ────────────────────────────────────────────────────
+  - name: Git
+    description: Distributed version control system
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: git
+    install_macos: "brew install git"
+    install_windows: "winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y git"
+    install_linux_dnf: "sudo dnf install -y git"
+    # Configure global Git identity. Provide GIT_USER_NAME and
+    # GIT_USER_EMAIL via --credentials-file for headless setup; otherwise
+    # the user is prompted for each value.
+    configure_macos:
+      - name: "Set global user.name"
+        check: "git config --global --get user.name >/dev/null"
+        interactive: "printf 'Git user.name: ' && read NAME && git config --global user.name \"$NAME\""
+        non_interactive: "git config --global user.name \"$GIT_USER_NAME\""
+        requires: [GIT_USER_NAME]
+      - name: "Set global user.email"
+        check: "git config --global --get user.email >/dev/null"
+        interactive: "printf 'Git user.email: ' && read EMAIL && git config --global user.email \"$EMAIL\""
+        non_interactive: "git config --global user.email \"$GIT_USER_EMAIL\""
+        requires: [GIT_USER_EMAIL]
+    configure_linux:
+      - name: "Set global user.name"
+        check: "git config --global --get user.name >/dev/null"
+        interactive: "printf 'Git user.name: ' && read NAME && git config --global user.name \"$NAME\""
+        non_interactive: "git config --global user.name \"$GIT_USER_NAME\""
+        requires: [GIT_USER_NAME]
+      - name: "Set global user.email"
+        check: "git config --global --get user.email >/dev/null"
+        interactive: "printf 'Git user.email: ' && read EMAIL && git config --global user.email \"$EMAIL\""
+        non_interactive: "git config --global user.email \"$GIT_USER_EMAIL\""
+        requires: [GIT_USER_EMAIL]
+    configure_windows:
+      - name: "Set global user.name"
+        check: "git config --global --get user.name >NUL"
+        interactive: "powershell -NoProfile -Command \"$n = Read-Host 'Git user.name'; git config --global user.name $n\""
+        non_interactive: "git config --global user.name \"%GIT_USER_NAME%\""
+        requires: [GIT_USER_NAME]
+      - name: "Set global user.email"
+        check: "git config --global --get user.email >NUL"
+        interactive: "powershell -NoProfile -Command \"$e = Read-Host 'Git user.email'; git config --global user.email $e\""
+        non_interactive: "git config --global user.email \"%GIT_USER_EMAIL%\""
+        requires: [GIT_USER_EMAIL]
+
+  - name: GitHub CLI
+    description: GitHub command-line tool (gh)
+    profiles: [baseline]
+    platforms: [macos, windows, linux]
+    check_command: gh
+    install_macos: "brew install gh"
+    install_windows: "winget install -e --id GitHub.cli --accept-package-agreements --accept-source-agreements"
+    install_linux_apt: "sudo apt install -y gh"
+    install_linux_dnf: "sudo dnf install -y gh"
+    # Example of the new configure_<os> schema with both interactive and
+    # non-interactive modes. Provide GH_TOKEN via --credentials-file or env
+    # to enable headless auth; otherwise the interactive `gh auth login`
+    # flow is used.
+    configure_macos:
+      - name: "Authenticate to GitHub"
+        check: "gh auth status >/dev/null 2>&1"
+        interactive: "gh auth login"
+        non_interactive: 'printf "%s" "$GH_TOKEN" | gh auth login --with-token'
+        requires: [GH_TOKEN]
+        sensitive: true
+    configure_linux:
+      - name: "Authenticate to GitHub"
+        check: "gh auth status >/dev/null 2>&1"
+        interactive: "gh auth login"
+        non_interactive: 'printf "%s" "$GH_TOKEN" | gh auth login --with-token'
+        requires: [GH_TOKEN]
+        sensitive: true
+    configure_windows:
+      - name: "Authenticate to GitHub"
+        check: "gh auth status >/dev/null 2>&1"
+        interactive: "gh auth login"
+        non_interactive: 'echo %GH_TOKEN% | gh auth login --with-token'
+        requires: [GH_TOKEN]
+        sensitive: true

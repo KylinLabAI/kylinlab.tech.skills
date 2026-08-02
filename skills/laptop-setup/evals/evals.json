@@ -1,0 +1,25 @@
+{
+  "skill_name": "laptop-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I just got a new MacBook Pro for development. Check what tools from this laptop setup skill are already installed, then show me a dry-run for installing only the missing apps. Do not install anything yet.",
+      "expected_output": "Runs or recommends --info and --list, then uses --install --dry-run before any mutating command. The response should summarize missing apps and avoid executing installation."
+    },
+    {
+      "id": 2,
+      "prompt": "Podman is installed on my Mac, but I need it to behave like Docker. Use the laptop setup skill to preview the setup steps and tell me what will touch my shell profile or require sudo.",
+      "expected_output": "Uses --setup --name \"Podman\" --dry-run, explains Podman post-install steps, calls out sudo and ~/.zshrc changes, and waits for confirmation before running setup."
+    },
+    {
+      "id": 3,
+      "prompt": "Can you verify whether my iOS simulators and Android emulators are available after setup?",
+      "expected_output": "Uses --verify, or --verify --name \"Xcode\" and --verify --name \"Android Studio\", then summarizes simulator/emulator status from the verification output."
+    },
+    {
+      "id": 4,
+      "prompt": "Install only my baseline laptop developer tools, but preview the commands before changing anything.",
+      "expected_output": "Runs or recommends --profiles if needed, then uses --list --profile baseline and --install --profile baseline --dry-run before any mutating command. The response should explain that the baseline profile is read from configs/apps.yaml and that already-installed tools are skipped."
+    }
+  ]
+}

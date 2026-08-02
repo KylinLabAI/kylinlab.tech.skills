@@ -1,0 +1,24 @@
+# =============================================================================
+# Disk Cleanup - External Tool Registry
+# =============================================================================
+# Drop-in extension for kylinlab.tech.skills/skills/laptop-setup.
+# Install:
+#   python3 kylinlab.tech.skills/skills/laptop-setup/scripts/laptop_setup.py --install \
+#     --apps-file kylinlab.tech.skills/skills/disk-cleanup/configs/apps.yaml \
+#     --profile disk-cleanup
+# =============================================================================
+
+settings:
+  ensure_package_manager: true
+  log_file: "disk_cleanup_setup.log"
+
+apps:
+  - name: "Python 3"
+    profiles: ["disk-cleanup", "core"]
+    category: "runtime"
+    platforms: [macos, windows, linux]
+    check_command: "python3"
+    install_macos: "brew install python"
+    install_windows: "winget install -e --id Python.Python.3.12"
+    install_linux_apt: "sudo apt-get update && sudo apt-get install -y python3 python3-pip"
+    install_linux_dnf: "sudo dnf install -y python3 python3-pip"
