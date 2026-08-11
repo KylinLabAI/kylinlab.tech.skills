@@ -52,8 +52,9 @@ When creating or revising a skill:
 
 Most skills here need only Python 3 (and Git), so they ship no init step. The
 contract applies **only** to a skill that depends on extra CLI tools it cannot
-assume are present. Today only `disk-cleanup` ships an `init.py` (it installs
-Python via `laptop-setup`).
+assume are present. Skills that ship an `init.py` today: `disk-cleanup` (installs
+Python via `laptop-setup`), `ai-token-usage` (installs Python via `laptop-setup`),
+and `ai-usage-report` (installs Python deps via `laptop-setup`).
 
 A skill with extra tool dependencies follows this pattern:
 

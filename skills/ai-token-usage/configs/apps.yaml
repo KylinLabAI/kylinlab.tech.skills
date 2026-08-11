@@ -1,0 +1,25 @@
+# =============================================================================
+# AI Token Usage - External Tool Registry
+# =============================================================================
+# Drop-in extension for skills/laptop-setup.
+# Install:
+#   python3 skills/laptop-setup/scripts/laptop_setup.py --install \
+#     --apps-file skills/ai-token-usage/configs/apps.yaml \
+#     --profile ai-token-usage
+# =============================================================================
+
+settings:
+  ensure_package_manager: true
+  log_file: "ai_token_usage_setup.log"
+
+apps:
+  # Required to run the bundled token usage scripts.
+  - name: "Python 3"
+    profiles: ["ai-token-usage", "core"]
+    category: "runtime"
+    platforms: [macos, windows, linux]
+    check_command: "python3"
+    install_macos: "brew install python"
+    install_windows: "winget install -e --id Python.Python.3.12"
+    install_linux_apt: "sudo apt-get update && sudo apt-get install -y python3 python3-pip"
+    install_linux_dnf: "sudo dnf install -y python3 python3-pip"

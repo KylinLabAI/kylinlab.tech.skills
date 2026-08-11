@@ -1,0 +1,11 @@
+{
+  "skill_name": "ai-usage-report",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Replace with a realistic user prompt.",
+      "expected_output": "Describe what success looks like.",
+      "files": []
+    }
+  ]
+}

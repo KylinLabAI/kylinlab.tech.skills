@@ -1,0 +1,35 @@
+[
+  {
+    "prompt": "show my AI token usage for the past week",
+    "expected_tool_calls": ["run_in_terminal"],
+    "expected_keywords": ["ai_token_usage", "--days 7", "--chart-file"],
+    "expected_response": "The agent presents the historical report with a summary line, Usage by Agent table, Usage by Model table, Top 3 sessions table, Peak day line, and Chart saved line."
+  },
+  {
+    "prompt": "how many tokens did copilot and codex use this month? break down by model",
+    "expected_tool_calls": ["run_in_terminal"],
+    "expected_keywords": ["ai_token_usage", "--days 30", "--chart-file"],
+    "expected_response": "The agent presents the historical report with the standard tables and a chart-saved line, including the model breakdown."
+  },
+  {
+    "prompt": "export my AI token usage for April as CSV",
+    "expected_tool_calls": ["run_in_terminal"],
+    "expected_keywords": ["ai_token_usage", "--format csv", "--since"]
+  },
+  {
+    "prompt": "which sessions used the most tokens? show top 5",
+    "expected_tool_calls": ["run_in_terminal"],
+    "expected_keywords": ["ai_token_usage", "--top-sessions 5", "--chart-file"]
+  },
+  {
+    "prompt": "show only codex token usage for last 14 days",
+    "expected_tool_calls": ["run_in_terminal"],
+    "expected_keywords": ["ai_token_usage", "--agent codex", "--days 14", "--chart-file"]
+  },
+  {
+    "prompt": "show token usage of this Codex session",
+    "expected_tool_calls": ["run_in_terminal"],
+    "expected_keywords": ["ai_token_usage", "--current-session", "--agent codex", "--format json"],
+    "expected_response": "The agent presents a current-session report with an ASCII context diagram first, then Markdown tables for Context Usage, Estimated Usage By Category, and Session Totals. It does not include a Command Used section. It notes that Codex category counts are estimated when reporting system/messages."
+  }
+]
