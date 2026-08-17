@@ -354,7 +354,66 @@ def capture(platform, usage_url, login_url=None, keyword=None,
             _fetch_trae_all_pages(page, state, platform)
 
         context.close()
-    return state["collected"]
+
+    records = state["collected"]
+    warnings = _self_check(platform, records, start, end, kw)
+    return records, warnings
+
+
+def _self_check(platform, records, start, end, kw):
+    """Post-capture sanity checks. Returns a list of human-readable warnings
+    so callers can decide whether the result looks complete before storing it.
+
+    We DO NOT silently accept a partial capture, because that produced wrong
+    reports before. Instead we surface red flags loudly.
+    """
+    warnings = []
+    if not records:
+        warnings.append(
+            f"未捕获到任何记录。可能原因：API 关键字 '{kw}' 不匹配、未登录、"
+            f"或页面未触发 usage 请求。请检查 --keyword / 登录态。")
+        return warnings
+
+    # 1) date parse rate
+    bad = [r for r in records if not r.get("date")]
+    if bad:
+        warnings.append(f"{len(bad)} 条记录缺少可解析的日期字段，可能被图表忽略。")
+
+    # 2) requested range coverage
+    if start and end:
+        have = {r["date"] for r in records if r.get("date")}
+        missing = []
+        d = start
+        while d <= end:
+            if d not in have:
+                missing.append(d)
+            d = d.fromordinal(d.toordinal() + 1)
+        if missing:
+            # tolerate a few missing days (some platforms omit zero-usage days)
+            if len(missing) > (end - start).days * 0.5:
+                warnings.append(
+                    f"请求范围 {start}~{end} 中缺失 {len(missing)} 天"
+                    f"（{missing[0]}…{missing[-1]}），数据可能不完整。")
+            else:
+                warnings.append(
+                    f"注意：范围内 {len(missing)} 天无记录（可能是零用量日）。")
+
+    # 3) suspiciously small capture for a wide range
+    if start and end and records:
+        span_days = max((end - start).days, 1)
+        per_day = len(records) / span_days
+        if per_day < 1 and span_days >= 7:
+            warnings.append(
+                f"捕获密度偏低（{len(records)} 条 / {span_days} 天）。"
+                f"若实际使用频繁，多半漏抓了分页，请重跑并确认滚动/翻页生效。")
+
+    # 4) Qoder-specific: duplicate/over-merge guard
+    if platform.lower() == "qoder":
+        # Qoder returns one row per IDE session; flag if model field is empty
+        empties = [r for r in records if not r.get("model")]
+        if empties:
+            warnings.append(f"{len(empties)} 条 Qoder 记录模型名为空。")
+    return warnings
 
 
 def _set_qoder_date_range(page, state, start=None, end=None):
@@ -394,12 +453,7 @@ def _set_qoder_date_range(page, state, start=None, end=None):
             # Qoder's API takes epoch-ms timestamps. The DOM-based date picker
             # approach doesn't reliably update the API params, so we call the
             # endpoint ourselves (same-origin, no CORS issues).
-            import time as _time
-            start_ms = str(int(_time.mktime(start.timetuple()) * 1000))
-            # end of day = start of next day - 1ms
-            end_ms = str(
-                int(_time.mktime((end + timedelta(days=1)).timetuple()) * 1000) - 1
-            )
+            start_ms, end_ms = _qoder_date_to_ms(start, end)
             print(f"[qoder-api] fetching {start}~{end} (ms: {start_ms}~{end_ms})")
             _fetch_qoder_api_pages(page, state, start_ms, end_ms)
             page.wait_for_timeout(1000)
@@ -423,12 +477,23 @@ def _set_qoder_date_range(page, state, start=None, end=None):
         print(f"[qoder-range] failed: {e}")
 
 
+def _qoder_date_to_ms(start, end):
+    """Convert local dates to Beijing (UTC+8) epoch milliseconds for Qoder API."""
+    from datetime import datetime as _dt
+    tz_beijing = timezone(timedelta(hours=8))
+    start_dt = _dt.combine(start, _dt.min.time(), tzinfo=tz_beijing)
+    end_dt = _dt.combine(end + timedelta(days=1), _dt.min.time(), tzinfo=tz_beijing)
+    start_ms = str(int(start_dt.timestamp() * 1000))
+    end_ms = str(int(end_dt.timestamp() * 1000) - 1)
+    return start_ms, end_ms
+
+
 def _fetch_qoder_api_pages(page, state, start_ms, end_ms):
     """Call Qoder's histories API with custom date range and paginate.
 
-    Each fetch() triggers the page's on_response listener, so records are
-    captured automatically. We just fire the requests, check whether we got
-    a full page (implies more pages exist), and handle pagination edges.
+    We fetch the JSON directly inside the browser and return it to Python.
+    This is more reliable than relying on Playwright's on_response listener
+    for fetch() calls issued from page.evaluate().
 
     Qoder API:
       GET .../usages/big_model_credits/histories
@@ -439,29 +504,48 @@ def _fetch_qoder_api_pages(page, state, start_ms, end_ms):
     PAGE_SIZE = 100
 
     page_num = 1
-    prev_total = len(state["collected"])
+    total_fetched = 0
     while True:
         url = (f"{base_url}?page={page_num}&page_size={PAGE_SIZE}"
                f"&start_time={start_ms}&end_time={end_ms}"
                f"&order_by=begin_at&order=-1")
         print(f"[qoder-api] page {page_num}: fetching...")
-        page.evaluate("""(url) => {
-            return fetch(url, {credentials: 'include'})
-                .then(r => r.json())
-                .catch(() => null);
+        payload = page.evaluate("""async (url) => {
+            try {
+                const r = await fetch(url, {credentials: 'include'});
+                if (!r.ok) return {__error: r.status};
+                return await r.json();
+            } catch (e) {
+                return {__error: String(e)};
+            }
         }""", url)
-        page.wait_for_timeout(1500)  # let on_response fire
-        new_total = len(state["collected"])
-        page_items = new_total - prev_total
-        print(f"[qoder-api] page {page_num}: +{page_items} items "
-              f"(total collected: {new_total})")
-        if page_items < PAGE_SIZE:
+
+        if not payload:
+            print(f"[qoder-api] page {page_num}: empty response, stopping.")
             break
-        prev_total = new_total
+        if isinstance(payload, dict) and payload.get("__error"):
+            print(f"[qoder-api] page {page_num}: error {payload['__error']}, stopping.")
+            break
+
+        records = _extract_list(payload)
+        if records:
+            norm = [_coerce_record(r, "qoder") for r in records]
+            state["collected"].extend(norm)
+            total_fetched += len(norm)
+            print(f"[qoder-api] page {page_num}: +{len(norm)} items "
+                  f"(total fetched this run: {total_fetched}, "
+                  f"state total: {len(state['collected'])})")
+        else:
+            print(f"[qoder-api] page {page_num}: no records in payload keys "
+                  f"{list(payload.keys()) if isinstance(payload, dict) else 'list'}")
+
+        # Pagination: stop if this page wasn't full.
+        if len(records) < PAGE_SIZE:
+            break
         page_num += 1
 
-    print(f"[qoder-api] done: {len(state['collected'])} records in state "
-          f"(across {page_num} page(s))")
+    print(f"[qoder-api] done: {total_fetched} records fetched across "
+          f"{page_num} page(s); state now {len(state['collected'])} records")
 
 
 def _fetch_trae_all_pages(page, state, platform):
@@ -579,13 +663,20 @@ def main():
         # We fetch the union of gaps by setting the widest gap as the capture
         # window; Qoder/TRAE UIs accept a single range, so use the outer bounds.
         g0, g1 = gaps[0][0], gaps[-1][1]
-        recs = capture(args.platform, args.url, args.login_url, args.keyword,
-                       args.scroll, args.headless, args.profile_dir,
-                       start=g0, end=g1)
+        recs, warnings = capture(args.platform, args.url, args.login_url, args.keyword,
+                                 args.scroll, args.headless, args.profile_dir,
+                                 start=g0, end=g1)
     else:
-        recs = capture(args.platform, args.url, args.login_url, args.keyword,
-                       args.scroll, args.headless, args.profile_dir,
-                       start=req_start, end=req_end)
+        recs, warnings = capture(args.platform, args.url, args.login_url, args.keyword,
+                                 args.scroll, args.headless, args.profile_dir,
+                                 start=req_start, end=req_end)
+
+    if warnings:
+        print("\n" + "=" * 60)
+        print("[capture: WARNINGS] 抓取结果可能不完整：")
+        for w in warnings:
+            print("  ⚠ " + w)
+        print("=" * 60 + "\n")
 
     if not recs:
         print("[warn] no records captured. Check keyword / login / URL.")

@@ -12,12 +12,18 @@ free-vs-paid distributions.
 The skill handles **two data-acquisition paths** that both feed the same
 analyzer:
 
-1. **File export** — CodeBuddy `.xlsx`, DeepSeek `.zip` (CSV), or any
-   generic `.csv`/`.xlsx`/`.json`.
+1. **File export (preferred)** — CodeBuddy `.xlsx`, DeepSeek `.zip` (CSV), or
+   any generic `.csv`/`.xlsx`/`.json`. Export files are placed in
+   `data/<platform>/raw/` and normalized automatically before reporting.
 2. **Browser capture** (`scrape_usage.py`) — for platforms without a reliable
-   export (Qoder / TRAE-CN web portals, or unifying CodeBuddy/DeepSeek via the
-   web portal). Playwright opens a real browser, keeps the login session,
-   intercepts the backend usage JSON, and writes a normalized CSV.
+   export (Qoder / TRAE-CN web portals). Playwright opens a real browser,
+   keeps the login session, intercepts the backend usage JSON, and writes a
+   normalized CSV.
+
+**Critical guardrail**: `build_report.py` always runs `verify_data.py` first.
+If a browser capture misses >50% of the requested days, the report is aborted
+unless `--force` is given. This prevents the silent data-loss bug that
+affected Qoder captures before Aug 2026.
 
 ## Persistent data store (incremental + reuse)
 
@@ -26,7 +32,9 @@ default **`~/Desktop/ai-usage-report`**):
 
 ```
 ~/Desktop/ai-usage-report/
-├── data/<platform>/<start>_<end>.csv     # raw captures, one file per fetch window
+├── data/<platform>/
+│   ├── raw/                              # original exports (.xlsx / .zip / .csv)
+│   └── <start>_<end>.csv                 # normalized captures, one file per window
 └── report/<platform>/<start>_<end>/       # generated reports (report.html + charts)
 ```
 
@@ -62,10 +70,10 @@ python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-31 --a
 
 ```
 Platform web portal  ──(scrape_usage.py --start/--end)──► data/<p>/<s>_<e>.csv
-CodeBuddy .xlsx  ─────────────────┐
-DeepSeek  .zip   ─────────────────┤
-any .csv/.json   ─────────────────┘──(analyze_usage.py)──► report/<p>/.../report.html
+CodeBuddy .xlsx  ──► data/<p>/raw/ ──(normalize.py)──► data/<p>/<s>_<e>.csv
+DeepSeek  .zip   ──► data/<p>/raw/ ──(normalize.py)──► data/<p>/<s>_<e>.csv
 data/<p>/*.csv   ──(build_report.py)──► report/<p>/<s>_<e>/report.html
+all platforms    ──(cross_platform_report.py)──► report/_combined/<s>_<e>/summary.html
 ```
 
 ## Supported inputs (analyze_usage.py, auto-detected by filename + content)
@@ -107,13 +115,26 @@ Per-platform API keyword hints (override with `--keyword`):
 
 ```bash
 cd <skill_dir>/scripts
-pip install --break-system-packages openpyxl matplotlib   # deps (xlsx + charts)
+pip install openpyxl matplotlib playwright
+python3 -m playwright install chromium
 
-# One-shot from a single export file:
-python3 analyze_usage.py /path/to/export.xlsx [--out DIR] [--platform NAME]
+# 1) Drop official exports into the raw/ folder, then normalize:
+cp request-usage-2026-08-12.xlsx  ~/Desktop/ai-usage-report/data/codebuddy/raw/
+cp usage_data_2026-07-14_2026-08-12.zip ~/Desktop/ai-usage-report/data/deepseek/raw/
+python3 normalize.py
 
-# Or build from the persistent data store (recommended workflow):
-python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-15 [--auto-fetch]
+# 2) For platforms without export (Qoder / TRAE), browser-capture the missing range:
+python3 scrape_usage.py --platform qoder --url https://qoder.com.cn/account/usage \
+  --start 2026-07-13 --end 2026-08-11
+python3 scrape_usage.py --platform trae --url <trae-usage-url> \
+  --start 2026-07-13 --end 2026-08-11
+
+# 3) Verify, then build per-platform reports:
+python3 verify_data.py --platform codebuddy --start 2026-07-13 --end 2026-08-11
+python3 build_report.py --platform codebuddy --start 2026-07-13 --end 2026-08-11
+
+# 4) Cross-platform summary (units are NOT additive):
+python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
 ```
 
 - `--out DIR`  : output folder (**default `~/Desktop/<input>_report`** for
@@ -127,6 +148,9 @@ python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-15 [--
 
 ## Notes / assumptions
 
+- **Cost units differ per platform and must NOT be summed across platforms**:
+  CodeBuddy/TRAE report 积分 (points); Qoder/DeepSeek report 美元/额度.
+  The cross-platform summary only compares request counts / active days / model mix.
 - If the export has only a single cost column (no discount info), the report
   treats 打折前 = 打折后 = cost. "免费" = cost 0 (or `wallet_type=free` /
   `free=true`); "付费" = cost > 0.
@@ -136,6 +160,9 @@ python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-15 [--
   代码阅读/分析, 代码编写/修改, 文档/博客, 工作流/Agent, 其他/对话) — heuristic.
 - No secrets/keys are written to the report beyond what the source contains;
   the analyzer does not exfiltrate data.
+- Export files in `data/<platform>/raw/` are kept untouched; `normalize.py`
+  produces derived CSVs. You can always re-run `normalize.py` or delete the
+  derived CSVs and start over from the original export.
 
 ## Extending
 

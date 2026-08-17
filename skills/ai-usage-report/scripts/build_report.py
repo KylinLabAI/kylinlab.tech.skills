@@ -34,6 +34,8 @@ def _import_local(name):
 
 data_store = _import_local("data_store")
 analyze = _import_local("analyze_usage")
+verify = _import_local("verify_data")
+normalize = _import_local("normalize")
 
 
 def _coerce(rows):
@@ -100,6 +102,8 @@ def main():
     ap.add_argument("--all", action="store_true", help="use the full cached range")
     ap.add_argument("--auto-fetch", action="store_true",
                     help="fetch missing date gaps before building")
+    ap.add_argument("--force", action="store_true",
+                    help="skip the integrity-verify gate (use with caution)")
     args = ap.parse_args()
 
     files = data_store.list_data_files(args.platform)
@@ -128,10 +132,35 @@ def main():
     if args.auto_fetch and req_start and req_end:
         _auto_fetch(args.platform, req_start, req_end)
 
+    # If the platform has exported raw files, re-normalize them first so the
+    # report is always based on the latest official export.
+    if normalize.has_export_raw(args.platform):
+        print("[build] detected official export files; normalizing first...")
+        normalize.normalize_all(args.platform)
+
     rows = _load_consolidated_rows(args.platform, req_start, req_end)
     if not rows:
         print("[build] no rows after merge; nothing to report.")
         return
+
+    # Integrity gate: refuse to publish a report on obviously incomplete data.
+    errors, warnings, _ = verify.verify(args.platform, req_start, req_end)
+    if errors:
+        print("\n[build] ❌ 数据校验未通过，已中止生成报告，避免产出错误结论。")
+        print("        请先用 scrape_usage.py 补齐缺失范围，再重新 build。")
+        print("        如确需基于现有数据出报告，可加 --force 跳过校验。\n")
+        if not getattr(args, "force", False):
+            sys.exit(2)
+    elif warnings:
+        print("[build] ⚠ 校验有警告，仍会生成报告（请人工确认）。\n")
+
+    # cost unit reminder for cross-platform work
+    unit = {
+        "qoder": "美元/额度", "trae": "积分(points)",
+        "codebuddy": "积分/额度", "deepseek": "美元",
+    }.get(args.platform.lower(), "未知")
+    print(f"[build] 平台 {args.platform} 费用单位：{unit}"
+          f"（不同平台单位不可直接相加）")
 
     # build the report under report/<platform>/<start>_<end>
     s = req_start or min(datetime.strptime(r["date"], "%Y-%m-%d").date()
