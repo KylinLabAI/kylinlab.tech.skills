@@ -8,7 +8,7 @@
 ## ⚠️ 关键注意事项（易错点）
 
 1. **费用单位不可相加**：各平台 `cost` 列单位不同——
-   Qoder / DeepSeek 为「美元/额度」，TRAE / CodeBuddy 为「积分(points)」。
+   Qoder / DeepSeek 为「人民币/额度 (CNY/RMB)」，TRAE / CodeBuddy 为「积分(points)」。
    跨平台只比较「请求数、活跃天数、Top 模型」等无量纲指标。
 2. **抓全 ≠ 抓对**：浏览器分页/滚动若没真正触发下一页请求，会**静默漏数据**。
    因此每次抓取后**必须**跑 `verify_data.py` 或让 `build_report.py` 自动校验，

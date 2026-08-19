@@ -149,7 +149,7 @@ python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
 ## Notes / assumptions
 
 - **Cost units differ per platform and must NOT be summed across platforms**:
-  CodeBuddy/TRAE report 积分 (points); Qoder/DeepSeek report 美元/额度.
+  CodeBuddy/TRAE report 积分 (points); Qoder/DeepSeek report 人民币/额度 (CNY/RMB).
   The cross-platform summary only compares request counts / active days / model mix.
 - If the export has only a single cost column (no discount info), the report
   treats 打折前 = 打折后 = cost. "免费" = cost 0 (or `wallet_type=free` /
