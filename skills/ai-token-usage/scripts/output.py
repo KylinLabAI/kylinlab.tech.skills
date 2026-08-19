@@ -156,6 +156,20 @@ def print_agent_summary(per_agent: dict[str, UsageBucket]) -> None:
     )
 
 
+def print_availability_notes(notes: list[dict[str, str]]) -> None:
+    """Print a compact note about IDEs that do not expose local token logs."""
+    unavailable = [n for n in notes if n["available"] == "no"]
+    if not unavailable:
+        return
+    print()
+    print("Local token data availability:")
+    for n in unavailable:
+        print(
+            f"  - {n['agent']}: not available locally "
+            f"({n['detail']} See {n['dashboard']} for usage.)"
+        )
+
+
 def print_model_summary(per_model: dict[str, UsageBucket]) -> None:
     rows = []
     for model, bucket in sorted(per_model.items(), key=lambda x: x[1].total_tokens, reverse=True):
@@ -488,40 +502,42 @@ def print_current_session(usage: CurrentSessionUsage, fmt: str) -> None:
     if usage.agent:
         print(f"  {usage.agent}")
     print(f"  {usage.model_name or UNKNOWN_MODEL}")
-    print(f"  {format_compact(used_total)}/{format_compact(full_ctx)} tokens used ({used_pct:.1f}%)")
 
-    # ASCII bar — proportional segments
-    bar_width = 50
-    seg_sys = round((sys_overhead / full_ctx) * bar_width) if full_ctx else 0
-    seg_msg = round((messages_tokens / full_ctx) * bar_width) if full_ctx else 0
-    seg_out = round((output_reserved / full_ctx) * bar_width) if full_ctx else 0
-    seg_free = bar_width - seg_sys - seg_msg - seg_out
-    if sys_overhead > 0 and seg_sys == 0:
-        seg_sys = 1
-        seg_free -= 1
-    if messages_tokens > 0 and seg_msg == 0:
-        seg_msg = 1
-        seg_free -= 1
-    if output_reserved > 0 and seg_out == 0:
-        seg_out = 1
-        seg_free -= 1
-    if seg_free < 0:
-        seg_free = 0
-    bar = "S" * seg_sys + "M" * seg_msg + "░" * seg_free + "O" * seg_out
-    print(f"  [{bar}]")
-    print(f"   {'S':>1}=System  {'M':>1}=Messages  {'░':>1}=Free  {'O':>1}=Output reserved")
-    print()
+    if full_ctx > 0:
+        print(f"  {format_compact(used_total)}/{format_compact(full_ctx)} tokens used ({used_pct:.1f}%)")
 
-    print("  Estimated usage by category")
-    print(f"  ● System prompt (tools+skills): {format_compact(sys_overhead)} tokens ({sys_pct:.1f}%)")
-    print(f"  ● Messages:                     {format_compact(messages_tokens)} tokens ({msg_pct:.1f}%)")
-    print(f"  □ Free space:                   {format_compact(free)} tokens ({free_pct:.1f}%)")
-    print(f"  ▨ Output reserved:              {format_compact(output_reserved)} tokens ({out_pct:.1f}%)")
-    print(f"                                  ─────────────────────")
-    print(f"    Total context window:         {format_compact(full_ctx)} tokens")
-    if usage.category_note:
-        print(f"    Note: {usage.category_note}")
-    print()
+        # ASCII bar — proportional segments
+        bar_width = 50
+        seg_sys = round((sys_overhead / full_ctx) * bar_width) if full_ctx else 0
+        seg_msg = round((messages_tokens / full_ctx) * bar_width) if full_ctx else 0
+        seg_out = round((output_reserved / full_ctx) * bar_width) if full_ctx else 0
+        seg_free = bar_width - seg_sys - seg_msg - seg_out
+        if sys_overhead > 0 and seg_sys == 0:
+            seg_sys = 1
+            seg_free -= 1
+        if messages_tokens > 0 and seg_msg == 0:
+            seg_msg = 1
+            seg_free -= 1
+        if output_reserved > 0 and seg_out == 0:
+            seg_out = 1
+            seg_free -= 1
+        if seg_free < 0:
+            seg_free = 0
+        bar = "S" * seg_sys + "M" * seg_msg + "░" * seg_free + "O" * seg_out
+        print(f"  [{bar}]")
+        print(f"   {'S':>1}=System  {'M':>1}=Messages  {'░':>1}=Free  {'O':>1}=Output reserved")
+        print()
+
+        print("  Estimated usage by category")
+        print(f"  ● System prompt (tools+skills): {format_compact(sys_overhead)} tokens ({sys_pct:.1f}%)")
+        print(f"  ● Messages:                     {format_compact(messages_tokens)} tokens ({msg_pct:.1f}%)")
+        print(f"  □ Free space:                   {format_compact(free)} tokens ({free_pct:.1f}%)")
+        print(f"  ▨ Output reserved:              {format_compact(output_reserved)} tokens ({out_pct:.1f}%)")
+        print(f"                                  ─────────────────────")
+        print(f"    Total context window:         {format_compact(full_ctx)} tokens")
+        if usage.category_note:
+            print(f"    Note: {usage.category_note}")
+        print()
 
     print(f"  Session created: {usage.creation_date}")
     print(f"  Total turns:     {usage.turns}")
@@ -531,12 +547,13 @@ def print_current_session(usage: CurrentSessionUsage, fmt: str) -> None:
     print()
 
     # Per-turn breakdown
-    print("  Per-turn breakdown:")
-    print(f"    {'Turn':>4}  {'Prompt':>12}  {'Output':>10}  {'Total':>12}  Context")
-    print(f"    {'----':>4}  {'------':>12}  {'------':>10}  {'-----':>12}  -------")
-    for i, t in enumerate(usage.per_turn, 1):
-        tp = t["prompt"]
-        to = t["output"]
-        tt = tp + to
-        ctx_pct = (tp / max_input * 100) if max_input else 0
-        print(f"    {i:>4}  {tp:>12,}  {to:>10,}  {tt:>12,}  {ctx_pct:.1f}%")
+    if usage.per_turn:
+        print("  Per-turn breakdown:")
+        print(f"    {'Turn':>4}  {'Prompt':>12}  {'Output':>10}  {'Total':>12}  Context")
+        print(f"    {'----':>4}  {'------':>12}  {'------':>10}  {'-----':>12}  -------")
+        for i, t in enumerate(usage.per_turn, 1):
+            tp = t["prompt"]
+            to = t["output"]
+            tt = tp + to
+            ctx_pct = (tp / max_input * 100) if max_input else 0
+            print(f"    {i:>4}  {tp:>12,}  {to:>10,}  {tt:>12,}  {ctx_pct:.1f}%")

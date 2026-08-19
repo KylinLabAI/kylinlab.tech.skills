@@ -21,7 +21,7 @@ instructions) and a matching `docs/<skill>.md` manual (human-facing).
 | [`laptop-setup`](skills/laptop-setup/SKILL.md) | [manual](docs/laptop-setup.md) | Provision, audit, or verify a developer laptop from a YAML app registry (brew/winget/apt/dnf), with profiles and dry-runs |
 | [`skill-manager`](skills/skill-manager/SKILL.md) | [manual](docs/skill-manager.md) | Link and unlink local skill directories across agent runtimes using symlinks |
 | [`workspace-setup`](skills/workspace-setup/SKILL.md) | [manual](docs/workspace-setup.md) | Capture a workspace folder tree (git repos + structure) to a portable config, then recreate it by cloning |
-| [`ai-token-usage`](skills/ai-token-usage/SKILL.md) | [manual](docs/ai-token-usage.md) | Report combined AI token usage (Copilot, Codex, Claude Code) from local session JSONL logs, with breakdowns, charts, and CSV/JSON export |
+| [`ai-token-usage`](skills/ai-token-usage/SKILL.md) | [manual](docs/ai-token-usage.md) | Report combined AI token usage (Copilot, Codex, Claude Code, OpenCode, Qoder, CodeBuddy, TRAE, CloudCode) from local session logs / DBs, with breakdowns, charts, and CSV/JSON export |
 | [`ai-agent-auto-approve`](skills/ai-agent-auto-approve/SKILL.md) | [manual](docs/ai-agent-auto-approve.md) | Configure AI coding agents (Copilot, Claude Code, Codex, Cursor, Aider, Cline, Roo Code, Windsurf) for fully autonomous auto-approve operation |
 | [`ai-usage-report`](skills/ai-usage-report/SKILL.md) | [manual](docs/ai-usage-report.md) | Analyze AI platform usage exports (CodeBuddy, DeepSeek, Qoder, TRAE, generic) and generate a statistical HTML report with daily/cost/model/task charts |
 

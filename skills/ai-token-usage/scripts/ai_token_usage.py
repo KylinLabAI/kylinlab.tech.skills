@@ -25,6 +25,11 @@ from common import (
     AGENT_CLAUDE_CODE,
     AGENT_CLAUDE_CLI,
     AGENT_CLAUDE_VSCODE,
+    AGENT_QODER,
+    AGENT_CODEBUDDY,
+    AGENT_TRAE,
+    AGENT_OPENCODE,
+    AGENT_CLOUDCODE,
     ALL_AGENTS,
     UsageBucket,
     SessionInfo,
@@ -52,6 +57,18 @@ from output import (
     print_csv,
     print_json,
     print_current_session,
+    print_availability_notes,
+)
+from opencode import (
+    scan_opencode,
+    analyze_current_opencode_session,
+)
+from probe_ides import (
+    scan_qoder,
+    scan_codebuddy,
+    scan_trae,
+    scan_cloudecode,
+    availability_notes,
 )
 
 
@@ -155,7 +172,13 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 def analyze_current_session(session_path: Path) -> CurrentSessionUsage:
-    """Parse a single Copilot or Codex JSONL file and return context usage."""
+    """Parse a single session and return context usage.
+
+    For OpenCode the "path" is a sentinel string (opencode:<id>) referring to a
+    database row, handled separately.
+    """
+    if str(session_path).startswith("opencode:"):
+        return analyze_current_opencode_session() or CurrentSessionUsage()
     try:
         lines = session_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -197,6 +220,7 @@ def main() -> int:
             session_path = Path(args.session_file)
         else:
             candidates: list[Path] = []
+            opencode_current = None
             if args.agent in (None, AGENT_COPILOT):
                 candidates.extend(find_copilot_session_files(args.vscode_data))
             if args.agent in (None, AGENT_CODEX, AGENT_CODEX_CLI, AGENT_CODEX_VSCODE):
@@ -213,7 +237,16 @@ def main() -> int:
                         include_subagents=not args.no_subagents,
                     )
                 )
+            if args.agent in (None, AGENT_OPENCODE):
+                oc = analyze_current_opencode_session()
+                if oc is not None and oc.total_prompt > 0:
+                    # OpenCode is database-backed; track via a flag, not a path.
+                    opencode_current = oc
             if not candidates:
+                if opencode_current is not None:
+                    usage = opencode_current
+                    print_current_session(usage, args.format)
+                    return 0
                 print("No AI session files found.", file=sys.stderr)
                 return 1
             session_path = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -242,6 +275,11 @@ def main() -> int:
     copilot_scanned = copilot_counted = 0
     codex_scanned = codex_counted = 0
     claude_scanned = claude_counted = 0
+    qoder_scanned = qoder_counted = 0
+    codebuddy_scanned = codebuddy_counted = 0
+    trae_scanned = trae_counted = 0
+    opencode_scanned = opencode_counted = 0
+    cloudecode_scanned = cloudecode_counted = 0
     copilot_files = 0
     codex_files = 0
     claude_files = 0
@@ -283,12 +321,46 @@ def main() -> int:
             agent_filter=claude_agent_filter,
         )
 
-    total_scanned = copilot_scanned + codex_scanned + claude_scanned
-    total_counted = copilot_counted + codex_counted + claude_counted
+    # Qoder / CodeBuddy / Trae / CloudCode — VS Code-derived IDEs.
+    # These do not persist token usage locally; the parsers probe known paths
+    # and return counts only if a parseable token store exists.
+    new_agents = [
+        (AGENT_QODER, scan_qoder, "qoder_scanned", "qoder_counted"),
+        (AGENT_CODEBUDDY, scan_codebuddy, "codebuddy_scanned", "codebuddy_counted"),
+        (AGENT_TRAE, scan_trae, "trae_scanned", "trae_counted"),
+        (AGENT_CLOUDCODE, scan_cloudecode, "cloudecode_scanned", "cloudecode_counted"),
+    ]
+    for agent, scanner, s_key, c_key in new_agents:
+        if args.agent in (None, agent):
+            sc, co = scanner(
+                start, end, daily, per_session, per_model, per_agent,
+                session_infos, daily_agent, daily_model,
+            )
+            vars()[s_key] = sc
+            vars()[c_key] = co
+
+    # OpenCode — SQLite-backed, full local token data.
+    if args.agent in (None, AGENT_OPENCODE):
+        opencode_scanned, opencode_counted = scan_opencode(
+            start, end, daily, per_session, per_model, per_agent,
+            session_infos, daily_agent, daily_model,
+        )
+
+    total_scanned = (
+        copilot_scanned + codex_scanned + claude_scanned
+        + qoder_scanned + codebuddy_scanned + trae_scanned
+        + opencode_scanned + cloudecode_scanned
+    )
+    total_counted = (
+        copilot_counted + codex_counted + claude_counted
+        + qoder_counted + codebuddy_counted + trae_counted
+        + opencode_counted + cloudecode_counted
+    )
 
     metadata = {
         "sources": ["copilot-vscode", "codex-cli", "codex-vscode",
-                     "claude-cli", "claude-vscode"],
+                     "claude-cli", "claude-vscode",
+                     "qoder", "codebuddy", "trae", "opencode", "cloudecode"],
         "range_start": start.date().isoformat(),
         "range_end": (end - timedelta(days=1)).date().isoformat(),
         "copilot_session_files": copilot_files,
@@ -309,6 +381,9 @@ def main() -> int:
             f"{total_scanned} usage records found.",
             file=sys.stderr,
         )
+        notes = availability_notes()
+        if any(n["available"] == "no" for n in notes):
+            print_availability_notes(notes)
         return 0
 
     if args.format == "table":
@@ -327,9 +402,13 @@ def main() -> int:
             f"{claude_files} claude-code session files, "
             f"{total_scanned} usage records, {total_counted} in range."
         )
+        notes = availability_notes()
+        print_availability_notes(notes)
     elif args.format == "csv":
         print_csv(daily, dates)
     elif args.format == "json":
+        notes = availability_notes()
+        metadata["tool_availability"] = notes
         print_json(daily, per_session, per_model, per_agent, session_infos, dates,
                     args.top_sessions, metadata)
 

@@ -19,11 +19,17 @@ AGENT_CODEX_VSCODE = "codex-vscode"
 AGENT_CLAUDE_CODE = "claude-code"
 AGENT_CLAUDE_CLI = "claude-cli"
 AGENT_CLAUDE_VSCODE = "claude-vscode"
+AGENT_QODER = "qoder"
+AGENT_CODEBUDDY = "codebuddy"
+AGENT_TRAE = "trae"
+AGENT_OPENCODE = "opencode"
+AGENT_CLOUDCODE = "cloudecode"
 UNKNOWN_MODEL = "unknown"
 
 ALL_AGENTS = (
     AGENT_COPILOT, AGENT_CODEX, AGENT_CODEX_CLI, AGENT_CODEX_VSCODE,
     AGENT_CLAUDE_CODE, AGENT_CLAUDE_CLI, AGENT_CLAUDE_VSCODE,
+    AGENT_QODER, AGENT_CODEBUDDY, AGENT_TRAE, AGENT_OPENCODE, AGENT_CLOUDCODE,
 )
 
 # Map Codex originator field to agent label
@@ -287,10 +293,21 @@ def parse_date(value: str, name: str) -> datetime:
     return parsed.replace(tzinfo=timezone.utc)
 
 
-def parse_timestamp(value: str) -> datetime | None:
-    if not value:
+def parse_timestamp(value: Any) -> datetime | None:
+    if value is None or value == "":
         return None
-    normalized = value.replace("Z", "+00:00")
+    # Numeric epoch (int/float) — OpenCode stores Unix time in seconds,
+    # milliseconds, or nanoseconds; tolerate all three.
+    if isinstance(value, (int, float)):
+        if value > 1e15:  # nanoseconds
+            value = value / 1_000_000_000
+        elif value > 1e12:  # milliseconds
+            value = value / 1_000
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    normalized = str(value).replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:

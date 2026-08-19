@@ -1,12 +1,16 @@
 ---
 name: ai-token-usage
-description: Report combined AI token usage from GitHub Copilot (VS Code extension), Codex (CLI + VS Code extension), and Claude Code (CLI + VS Code extension) by reading local session JSONL logs. Shows total usage, per-agent (copilot/codex-cli/codex-vscode/claude-cli/claude-vscode) breakdown, per-model breakdown, top sessions, and daily trending chart. Also supports a current-session context usage summary showing model, context window fill percentage, and per-turn token breakdown. Use when the user asks for AI token usage, daily token usage, monthly token usage, combined copilot + codex + claude-code usage, token statistics by agent or model, top sessions by tokens, current session token usage, context window usage, how much context is left, or wants a CSV/JSON/table report of AI agent token consumption.
+description: Report combined AI token usage from GitHub Copilot (VS Code extension), Codex (CLI + VS Code extension), Claude Code (CLI + VS Code extension), and OpenCode (SQLite) by reading local session logs. Also reports Qoder, CodeBuddy, TRAE, and CloudCode availability (token usage is tracked server-side for those). Shows total usage, per-agent (copilot/codex-cli/codex-vscode/claude-cli/claude-vscode/qoder/codebuddy/trae/opencode/cloudecode) breakdown, per-model breakdown, top sessions, and daily trending chart. Also supports a current-session context usage summary showing model, context window fill percentage, and per-turn token breakdown. Use when the user asks for AI token usage, daily token usage, monthly token usage, combined copilot + codex + claude-code + opencode usage, token statistics by agent or model, top sessions by tokens, current session token usage, context window usage, how much context is left, or wants a CSV/JSON/table report of AI agent token consumption.
 ---
 
 # ai-token-usage
 
-Report combined AI token usage from **Copilot** (VS Code extension) and
-**Codex** (CLI + VS Code extension) by reading local session JSONL logs.
+Report combined AI token usage from **Copilot** (VS Code extension),
+**Codex** (CLI + VS Code extension), **Claude Code** (CLI + VS Code extension),
+and **OpenCode** (SQLite) by reading local session logs. For **Qoder**,
+**CodeBuddy**, **TRAE**, and **CloudCode**, the skill reports local-data
+availability (these IDEs track usage server-side and do not persist token
+counts locally).
 
 ## Initialization Contract
 
@@ -28,6 +32,11 @@ to initialize the skill first with `python <skill>/scripts/init.py`.
 | Claude Code CLI (`claude-cli`) | `~/.claude/projects/<project-slug>/*.jsonl` (distinguished by `entrypoint: "claude"`) |
 | Claude Code VS Code (`claude-vscode`) | Same paths as CLI (distinguished by `entrypoint: "claude-vscode"`) |
 | Claude Code subagents | `~/.claude/projects/<project-slug>/*/subagents/agent-*.jsonl` |
+| **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` (SQLite; `session` table holds per-session token counts + cost) |
+| **Qoder** (`qoder`) | VS Code-derived IDE; no local token store — usage tracked server-side (Qoder web dashboard) |
+| **CodeBuddy** (`codebuddy`) | VS Code-derived IDE; no local token store — usage tracked server-side (Tencent Cloud console) |
+| **TRAE** (`trae`) | VS Code-derived IDE; no local token store — usage tracked server-side (TRAE web dashboard) |
+| **CloudCode** (`cloudecode`) | CloudBase/CodeBuddy-family IDE; no documented local token store — usage tracked server-side (CloudBase console) |
 
 ## When to use
 
@@ -140,7 +149,7 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--until` | — | End date (YYYY-MM-DD) |
 | `--format` | table | Output: `table`, `csv`, or `json` |
 | `--top-sessions N` | 3 | Show top N sessions (0 to disable) |
-| `--agent` | — | Filter: `copilot`, `codex` (all), `codex-cli`, `codex-vscode`, `claude-code` (all), `claude-cli`, or `claude-vscode` |
+| `--agent` | — | Filter: `copilot`, `codex` (all), `codex-cli`, `codex-vscode`, `claude-code` (all), `claude-cli`, `claude-vscode`, `qoder`, `codebuddy`, `trae`, `opencode`, or `cloudecode` |
 | `--no-chart` | false | Skip the daily ASCII trend chart |
 | `--chart-file PATH` | — | Save matplotlib chart image (PNG) with 3 panels: total, by-agent, by-model |
 | `--chart-width N` | 48 | Max bar width for ASCII trend chart |
@@ -154,14 +163,24 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 
 ## Other AI Coding Tools — Token Usage
 
-The following tools do **not** write parseable local token-usage logs. This skill cannot report their token usage.
+OpenCode token usage **is** tracked locally via its SQLite database. The other
+VS Code-derived IDEs do not persist token counts in local files; this skill
+reports their availability and points to the server-side dashboard.
 
-| Tool | Token Tracking |
-|------|---------------|
-| **TRAE** (ByteDance) | Usage tracked via TRAE web dashboard. No local token log format documented. |
-| **CodeBuddy** (Tencent Cloud) | Usage tracked via Tencent Cloud console. No local token log format documented. |
+| Tool | Local token logs? | Where usage is tracked |
+|------|-------------------|------------------------|
+| **OpenCode** | Yes — `~/.local/share/opencode/opencode.db` | Local SQLite (`session` table) — fully reported |
+| **TRAE** (ByteDance) | No | TRAE web dashboard |
+| **CodeBuddy** (Tencent Cloud) | No | Tencent Cloud console |
+| **Qoder** (Alibaba) | No | Qoder web dashboard |
+| **CloudCode** (CloudBase) | No | CloudBase console |
 
-Claude Code token usage is now tracked by this skill via `~/.claude/projects/` JSONL logs.
+When you run a report, these IDEs appear under **Local token data
+availability** at the bottom of the table output (and in the `tool_availability`
+field of JSON output). Counts for them are `0` because no local token records
+exist — that is expected, not a bug.
+
+Claude Code token usage is tracked by this skill via `~/.claude/projects/` JSONL logs.
 
 See `references/ai-token-usage-guide.md` § "Other AI Coding Tools" for details.
 
