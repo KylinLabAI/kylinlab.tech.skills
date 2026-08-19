@@ -637,6 +637,9 @@ def main():
                     help="persistent Chrome profile dir (default: ~/Library/Caches/ai_usage_profile)")
     ap.add_argument("--start", default=None, help="requested range start yyyy-mm-dd (incremental)")
     ap.add_argument("--end", default=None, help="requested range end yyyy-mm-dd (incremental)")
+    ap.add_argument("--no-backfill", action="store_true",
+                    help="do not force re-fetch of the previous pull's final day "
+                         "(set this only if you are certain that day is complete)")
     args = ap.parse_args()
 
     # Resolve requested date range (used for incremental storage + Qoder UI).
@@ -653,8 +656,16 @@ def main():
     # Incremental logic: if no explicit --out, consult the data store to see
     # what is already captured, and only fetch the missing gaps.
     if not args.out and req_start and req_end:
-        from data_store import missing_ranges, platform_data_dir
-        gaps = missing_ranges(req_start, req_end, args.platform)
+        from data_store import missing_ranges, last_covered_date, platform_data_dir
+        # Force re-fetch of the previous pull's final day: it may have been
+        # captured mid-day (e.g. at noon), so its tail is likely incomplete.
+        # Merging + dedup backfills the missing part without double-counting.
+        force = set()
+        if not args.no_backfill:
+            prev_last = last_covered_date(args.platform)
+            if prev_last is not None:
+                force.add(prev_last)
+        gaps = missing_ranges(req_start, req_end, args.platform, force_days=force)
         if not gaps:
             print(f"[store] range {req_start}~{req_end} already fully cached; "
                   f"skip fetching. Use analyze_usage.py to build the report.")

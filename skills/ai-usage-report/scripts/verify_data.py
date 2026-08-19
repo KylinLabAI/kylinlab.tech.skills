@@ -95,12 +95,11 @@ def verify(platform, req_start=None, req_end=None):
                 f"捕获密度偏低（{len(rows)} 条 / {span} 天）。"
                 f"若实际频繁使用，多半漏抓了分页，请重跑。")
 
-    # 4) duplicates within the consolidated set
+    # 4) duplicates within the consolidated set (use the same robust key as
+    #    data_store.load_consolidated so this reflects real dedup behavior).
     seen, dups = set(), 0
     for r in rows:
-        key = (r.get("date", ""), r.get("model", ""),
-               round(float(str(r.get("cost", 0)) or 0), 4),
-               (r.get("prompt", "") or "")[:40])
+        key = data_store._dedup_key(r)
         if key in seen:
             dups += 1
         seen.add(key)

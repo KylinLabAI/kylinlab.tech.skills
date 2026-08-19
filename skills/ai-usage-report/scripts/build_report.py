@@ -64,9 +64,18 @@ def _load_consolidated_rows(platform, req_start, req_end):
     return _coerce(data_store.load_consolidated(platform, req_start, req_end))
 
 
-def _auto_fetch(platform, req_start, req_end):
-    """Trigger scrape_usage.py for missing gaps only."""
-    gaps = data_store.missing_ranges(req_start, req_end, platform)
+def _auto_fetch(platform, req_start, req_end, no_backfill=False):
+    """Trigger scrape_usage.py for missing gaps only.
+
+    By default the previous pull's final day is force re-fetched (backfilled),
+    because it may have been captured mid-day and is only partially complete.
+    """
+    force = set()
+    if not no_backfill:
+        prev_last = data_store.last_covered_date(platform)
+        if prev_last is not None:
+            force.add(prev_last)
+    gaps = data_store.missing_ranges(req_start, req_end, platform, force_days=force)
     if not gaps:
         print(f"[build] range {req_start}~{req_end} already cached, skip fetch.")
         return
@@ -104,6 +113,9 @@ def main():
                     help="fetch missing date gaps before building")
     ap.add_argument("--force", action="store_true",
                     help="skip the integrity-verify gate (use with caution)")
+    ap.add_argument("--no-backfill", action="store_true",
+                    help="do not force re-fetch of the previous pull's final day "
+                         "(set only if you are certain that day is complete)")
     args = ap.parse_args()
 
     files = data_store.list_data_files(args.platform)
@@ -130,7 +142,7 @@ def main():
             req_end = max(e for _s, e, _p in files)
 
     if args.auto_fetch and req_start and req_end:
-        _auto_fetch(args.platform, req_start, req_end)
+        _auto_fetch(args.platform, req_start, req_end, no_backfill=args.no_backfill)
 
     # If the platform has exported raw files, re-normalize them first so the
     # report is always based on the latest official export.
