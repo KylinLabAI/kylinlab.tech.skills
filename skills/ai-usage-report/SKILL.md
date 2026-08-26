@@ -146,11 +146,12 @@ the file-export workflow for those platforms.
     --url https://www.codebuddy.cn/profile/plans-usage --discover
   ```
 
-  `--discover` saves the captured endpoint to
-  `<AI_USAGE_ROOT>/config/<platform>_api.json` (outside the repo, never
-  committed). Edit the saved stub if date placeholders (`{start}`/`{end}`)
-  or a `{page}` token need adjusting. `date_format` is `"date"` by default;
-  set `"ms"` for epoch-millisecond APIs (like Qoder) with `tz_offset_hours`.
+  `--discover` saves the captured endpoint to the **system temp dir**
+  (`$TMPDIR/ai-usage-report/specs/<platform>_api.json`) — a transient override,
+  not user data, never committed. Edit the saved stub if date placeholders
+  (`{start}`/`{end}`) or a `{page}` token need adjusting. `date_format` is
+  `"date"` by default; set `"ms"` for epoch-millisecond APIs (like Qoder) with
+  `tz_offset_hours`.
 
 If no API spec is configured (or the cached session expired), the scraper
 falls back to the manual-login + UI-intercept flow described above, so the

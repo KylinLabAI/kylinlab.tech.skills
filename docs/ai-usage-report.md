@@ -136,9 +136,10 @@ cached) no manual login either.
 
   (CodeBuddy also supports `--discover` if the endpoint/body ever changes.)
 
-  `--discover` saves the endpoint to `<AI_USAGE_ROOT>/config/<platform>_api.json`
-  (outside the repo, never committed). Edit the saved stub if the date
-  placeholders (`{start}`/`{end}`) or a `{page}` token need adjusting; set
+  `--discover` saves the endpoint to the system temp dir
+  (`$TMPDIR/ai-usage-report/specs/<platform>_api.json`) — a transient override,
+  not user data, never committed. Edit the saved stub if the date placeholders
+  (`{start}`/`{end}`) or a `{page}` token need adjusting; set
   `"date_format": "ms"` for epoch-millisecond APIs (with `tz_offset_hours`).
 
 If no API spec is configured, or the cached session expired, the scraper

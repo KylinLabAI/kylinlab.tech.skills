@@ -199,7 +199,12 @@ def _coerce_record(rec, platform):
 # ---------------------------------------------------------------------------
 
 def _api_spec_path(platform):
-    return os.path.join(data_store.ROOT, "config", f"{platform.lower()}_api.json")
+    # Discovered specs are transient overrides, not user data — keep them in the
+    # system temp dir, NOT under AI_USAGE_ROOT (the user-facing data store).
+    import tempfile
+    d = os.path.join(tempfile.gettempdir(), "ai-usage-report", "specs")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{platform.lower()}_api.json")
 
 
 def load_api_spec(platform):
@@ -242,10 +247,29 @@ def _build_date_tokens(start, end, fmt, tz_offset_hours=0):
         s = _dt.combine(start, _dt.min.time(), tzinfo=tz)
         e = _dt.combine(end, _dt.max.time(), tzinfo=tz)
         return s.strftime("%Y-%m-%d %H:%M:%S"), e.strftime("%Y-%m-%d %H:%M:%S")
+    if fmt == "epoch":
+        # epoch SECONDS (UTC). DeepSeek's by_api_key API uses this.
+        s = _dt.combine(start, _dt.min.time(), tzinfo=_tz.utc)
+        e = _dt.combine(end, _dt.max.time(), tzinfo=_tz.utc)
+        return str(int(s.timestamp())), str(int(e.timestamp()))
     if fmt == "iso":
         return start.isoformat(), end.isoformat()
     # default: yyyy-mm-dd
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def _month_windows(start, end):
+    """DeepSeek's by_api_key API only accepts month-aligned ranges, so split a
+    requested range into one window per calendar month and fetch each."""
+    import calendar
+    out = []
+    cur = date(start.year, start.month, 1)
+    while cur <= end:
+        last = calendar.monthrange(cur.year, cur.month)[1]
+        out.append((cur, date(cur.year, cur.month, last)))
+        cur = (date(cur.year + 1, 1, 1) if cur.month == 12
+               else date(cur.year, cur.month + 1, 1))
+    return out
 
 
 def _origin_of(url):
@@ -280,9 +304,14 @@ def _capture_via_api(platform, page, start, end):
     spec = load_api_spec(platform)
     if not spec or not spec.get("url"):
         return None
+    print(f"[api] _capture_via_api start={start!r} end={end!r}")
+    if platform.lower() == "deepseek":
+        return _capture_deepseek_via_api(page, start, end, spec)
     fmt = spec.get("date_format", "date")
     tz = spec.get("tz_offset_hours", 0)
     s_tok, e_tok = _build_date_tokens(start, end, fmt, tz)
+    print(f"[api] _build_date_tokens returned s_tok={s_tok} e_tok={e_tok} "
+          f"(start={start!r} end={end!r} fmt={fmt} tz={tz})")
     pg = spec.get("pagination", {}) or {}
     page_param = pg.get("page_param", "page")
     size = pg.get("size", 100)
@@ -301,6 +330,8 @@ def _capture_via_api(platform, page, start, end):
         url = (base.replace("{page}", str(pno))
                    .replace("{start}", s_tok)
                    .replace("{end}", e_tok))
+        if pno == 1:
+            print(f"[api] built url: {url}\n[api] tokens: start={s_tok} end={e_tok} fmt={fmt}")
         if method == "POST":
             # Substitute placeholders at the DICT level so numeric fields
             # (e.g. pageNum) stay integers instead of becoming strings.
@@ -333,7 +364,11 @@ def _capture_via_api(platform, page, start, end):
                 print(f"[api] evaluate error: {e!r}")
                 payload = {"__error": str(e)}
         else:
-            payload = _fetch_json_via_page(page, url, headers)
+            try:
+                payload = _fetch_json_via_page(page, url, headers)
+            except Exception as e:
+                print(f"[api] evaluate error: {e!r}")
+                payload = {"__error": str(e)}
 
         if not payload:
             break
@@ -347,6 +382,13 @@ def _capture_via_api(platform, page, start, end):
             break
 
         records = _extract_list(payload)
+        if pno == 1 and not records:
+            _d = payload.get("data") if isinstance(payload, dict) else None
+            _dinfo = (f"type={type(_d).__name__} "
+                      f"keys={list(_d.keys())[:12] if isinstance(_d, dict) else 'n/a'} "
+                      f"sample={str(_d)[:300]}")
+            print(f"[api] {platform} page 1: no list; payload keys="
+                  f"{list(payload.keys())[:12]} data={_dinfo}")
         if pno == 1 and records:
             print(f"[api] sample record fields: {list(records[0].keys())}")
         if records:
@@ -362,6 +404,53 @@ def _capture_via_api(platform, page, start, end):
     if not collected:
         return None
     return collected
+
+
+def _capture_deepseek_via_api(page, start, end, spec):
+    """DeepSeek-only fetch: month-aligned windows, merging the amount and cost
+    sibling endpoints, then filtering rows back to the requested [start, end]."""
+    print(f"[api] deepseek windows={_month_windows(start, end)} start={start!r} end={end!r}")
+    base = spec["url"]              # .../by_api_key/amount?start=..&end=..&tz=..
+    cost_base = base.replace("/amount", "/cost")
+    headers = spec.get("headers", {})
+    fmt = spec.get("date_format", "epoch")
+    tz = spec.get("tz_offset_hours", 0)
+    state = {"_deepseek_rows": {}}
+
+    for (w_start, w_end) in _month_windows(start, end):
+        s_tok, e_tok = _build_date_tokens(w_start, w_end, fmt, tz)
+        for b in (base, cost_base):
+            url = b.replace("{start}", s_tok).replace("{end}", e_tok)
+            kind = "cost" if "cost" in url else "amount"
+            if w_start == start and w_end == end:
+                print(f"[api] deepseek {kind} url: {url}")
+            try:
+                payload = _fetch_json_via_page(page, url, headers)
+            except Exception as e:
+                print(f"[api] deepseek {kind} evaluate error: {e!r}")
+                payload = {"__error": str(e)}
+            if isinstance(payload, dict) and payload.get("__error"):
+                print(f"[api] deepseek {kind}: error {payload['__error']}")
+                continue
+            if isinstance(payload, dict):
+                biz_data = (payload.get("data") or {}).get("biz_data")
+                if isinstance(biz_data, dict):
+                    print(f"[api] deepseek {kind}: biz_code="
+                          f"{biz_data.get('biz_code')} biz_msg={biz_data.get('biz_msg')!r}")
+                    if kind == "amount":
+                        dd = biz_data.get("data")
+                        sample = (dd[0] if isinstance(dd, list) and dd else dd)
+                        print(f"[api] deepseek amount data type={type(dd).__name__} "
+                              f"sample={str(sample)[:500]}")
+            _ingest_deepseek(url, payload, state)
+
+    rows = list(state["_deepseek_rows"].values())
+    rows = [r for r in rows
+            if isinstance(r.get("date"), datetime) and start <= r["date"].date() <= end]
+    print(f"[api] deepseek: {len(rows)} rows after month fetch + range filter")
+    if not rows:
+        return None
+    return rows
 
 
 def discover(platform, usage_url, login_url=None, keyword=None,
@@ -523,9 +612,15 @@ def discover(platform, usage_url, login_url=None, keyword=None,
     parsed = _up.urlparse(pick["url"])
     q = _up.parse_qs(parsed.query)
     cleaned = {}
+    dfmt = "date"
     for k, vals in q.items():
         v = vals[0] if vals else ""
         if re.search(r"(time|date|start|end|from|to)", k, re.I) and re.search(r"\d{4}", v):
+            # epoch seconds (10 digits) or milliseconds (12+ digits)?
+            if re.search(r"^\d{12,}$", v):
+                dfmt = "ms"
+            elif re.search(r"^\d{10}$", v):
+                dfmt = "epoch"
             v = "{start}" if re.search(r"start|from", k, re.I) else "{end}"
         cleaned[k] = v
     new_q = "&".join(f"{k}={v}" for k, v in cleaned.items())
@@ -534,10 +629,10 @@ def discover(platform, usage_url, login_url=None, keyword=None,
     spec = {
         "note": f"Auto-discovered for {platform}. Replace date values with "
                 f"{{start}}/{{end}} and add {{page}} if the API paginates. "
-                f"date_format is guessed as 'date' (use 'ms' for epoch-ms).",
+                f"date_format is guessed as 'date' (use 'ms'/'epoch' for unix).",
         "url": stub_url,
         "method": pick["method"],
-        "date_format": "date",
+        "date_format": dfmt,
         "pagination": {"page_param": "page", "size": 100,
                        "stop_when_less_than_size": True},
         "auth": "cookie",
@@ -627,13 +722,30 @@ def _ingest_deepseek(url, payload, state):
       - .../by_api_key/cost    -> per-day fee (CNY)
     We key by (day, model) so the two can be combined into one row each.
     """
-    biz = (payload.get("data") or {}).get("biz_data") or {}
-    outer = biz.get("data") or []
+    biz = (payload.get("data") or {}).get("biz_data")
+    if isinstance(biz, list):
+        outer = biz
+    elif isinstance(biz, dict):
+        outer = biz.get("data") or []
+    else:
+        outer = []
     is_cost = "cost" in url
     # cost endpoint: data = [ {currency, series:[...]} ]
     # amount endpoint: data = [ {api_key, model, buckets:[...]} ]
     series = []
+    if not outer:
+        print(f"[ingest] is_cost={is_cost} outer_type={type(outer).__name__} "
+              f"sample={str(outer)[:300]}")
+    else:
+        if not state.get("_dumped_outer"):
+            print(f"[ingest] is_cost={is_cost} outer_type={type(outer).__name__} "
+                  f"item0_type={type(outer[0]).__name__ if outer else 'n/a'} "
+                  f"outer_sample={str(outer)[:400]}")
+            state["_dumped_outer"] = True
     for item in outer:
+        if isinstance(item, dict) and "series" not in item and "buckets" not in item:
+            print(f"[ingest] unmatched item keys={list(item.keys())} "
+                  f"sample={str(item)[:300]}")
         if isinstance(item, dict) and "series" in item and isinstance(item["series"], list):
             series.extend(item["series"])
         elif isinstance(item, dict) and "buckets" in item:
@@ -645,6 +757,10 @@ def _ingest_deepseek(url, payload, state):
         for bucket in entry.get("buckets", []):
             day = bucket.get(DEEPSEEK_DATE_KEY)
             if day is None:
+                if not state.get("_dumped"):
+                    print(f"[ingest] amount bucket keys={list(bucket.keys())} "
+                          f"entry_keys={list(entry.keys())} sample={str(bucket)[:200]}")
+                    state["_dumped"] = True
                 continue
             key = (str(day), model)
             row = merge.setdefault(key, {
@@ -680,6 +796,17 @@ def capture(platform, usage_url, login_url=None, keyword=None,
         os.path.expanduser("~/Library/Caches"), "ai_usage_profile")
     os.makedirs(profile_dir, exist_ok=True)
     state = {"collected": [], "start": start, "end": end}
+    _fresh_auth = {"value": None}
+
+    def on_request(req):
+        # Capture a fresh session token the page sends, so our own API call
+        # (which reuses the saved spec) stays authorized after token refresh.
+        h = req.headers.get("authorization")
+        if h:
+            _fresh_auth["value"] = h
+        if "by_api_key" in req.url:
+            print(f"[debug] page request -> {req.url}")
+            print(f"[debug]   auth present: {bool(h)}")
 
     def on_response(resp):
         url = resp.url
@@ -693,11 +820,11 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                 # per-request list. Merge amount + cost responses.
                 _ingest_deepseek(url, payload, state)
                 return
-        records = _extract_list(payload)
-        if not records and isinstance(payload, dict):
-            print(f"[api] {platform} page {pno}: JSON but no list extracted; "
-                  f"keys={list(payload.keys())[:8]} sample={str(payload)[:160]}")
-        if records:
+            records = _extract_list(payload)
+            if not records and isinstance(payload, dict):
+                print(f"[api] {platform} page {pno}: JSON but no list extracted; "
+                      f"keys={list(payload.keys())[:8]} sample={str(payload)[:160]}")
+            if records:
                 norm = [_coerce_record(r, platform) for r in records]
                 state["collected"].extend(norm)
                 print(f"[capture] +{len(norm)} ({len(state['collected'])} total) "
@@ -710,6 +837,7 @@ def capture(platform, usage_url, login_url=None, keyword=None,
             profile_dir, channel="chrome", headless=headless)
         page = context.new_page()
         page.on("response", on_response)
+        page.on("request", on_request)
 
         # Auto-download via direct API (cookie auth from the persistent
         # profile). Skips the UI entirely when the session is still valid;
@@ -727,6 +855,14 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                         page.wait_for_load_state("domcontentloaded", timeout=30000)
                     except Exception:
                         pass
+                    # Give the SPA a moment to fire its own API (which carries a
+                    # fresh session token), then reuse that token for our call.
+                    page.wait_for_timeout(2500)
+                    print(f"[api] fresh auth captured: "
+                          f"{'yes' if _fresh_auth['value'] else 'no'}")
+                    if _fresh_auth["value"]:
+                        spec.setdefault("headers", {})["authorization"] = \
+                            _fresh_auth["value"]
                 api_records = _capture_via_api(platform, page, start, end)
                 if api_records:
                     print(f"[api] auto-downloaded {len(api_records)} records "
