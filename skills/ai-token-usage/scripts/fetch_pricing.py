@@ -71,6 +71,13 @@ EMBEDDED_PRICING = {
         "input": 0.44, "output": 1.32, "cache_read": 0.014,
         "input_cache_miss": 0.44, "source": "deepseek",
     },
+    # Placeholder for unknown router models (e.g. Copilot "Auto"). The client
+    # only logs "Auto"; the real model is resolved server-side and unknown.
+    # Defaults to deepseek-v4-flash rates — reconfigure freely if you know the
+    # typical model Auto routes to.
+    "auto": {"input": 0.44, "cache_read": 0.014, "output": 1.32,
+             "source": "placeholder",
+             "note": "Router 'Auto' model; defaults to deepseek-v4-flash rates. Edit to match your assumed model."},
     # Z.ai GLM text models — official rates from docs.z.ai/guides/overview/pricing
     # (columns: input | cached input = cache_read | storage free | output, USD / 1M).
     "glm-5.3": {"input": 1.4, "cache_read": 0.26, "output": 4.4, "source": "zhipu_glm"},

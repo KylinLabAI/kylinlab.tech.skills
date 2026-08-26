@@ -287,10 +287,21 @@ def generate_chart_image(
             ax.bar(short_dates, vals, bottom=bottom, label=m,
                    color=mcolors[m], edgecolor="white", linewidth=0.5)
             bottom = [b + v for b, v in zip(bottom, vals)]
+        # Daily total token count on top of each stacked bar.
+        for i, tot in enumerate(bottom):
+            if tot > 0:
+                ax.text(i, tot, _format_tick(tot), ha="center", va="bottom",
+                        fontsize=7, fontweight="bold")
+        ax.set_ylim(top=max(bottom) * 1.12 if bottom else 1)
         ax.legend(loc="upper left", fontsize=8)
     else:
         totals = [daily.get(d, UsageBucket()).total_tokens for d in dates]
         ax.bar(short_dates, totals, color="#5B9BD5")
+        for i, tot in enumerate(totals):
+            if tot > 0:
+                ax.text(i, tot, _format_tick(tot), ha="center", va="bottom",
+                        fontsize=7, fontweight="bold")
+        ax.set_ylim(top=max(totals) * 1.12 if totals else 1)
     ax.set_title("Daily Token Usage by Model", fontweight="bold")
     ax.set_ylabel("Tokens")
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(_format_tick))
