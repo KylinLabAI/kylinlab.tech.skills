@@ -162,6 +162,8 @@ def scan_copilot(
     session_infos: dict[str, SessionInfo],
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
+    per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
 ) -> tuple[int, int]:
     """Scan Copilot VS Code extension session files. Returns (scanned, counted)."""
     scanned = 0
@@ -226,7 +228,8 @@ def scan_copilot(
                             add_usage(daily, per_session, per_model, per_agent,
                                       prompt, completion, session_key, current_model,
                                       AGENT_COPILOT, creation_date,
-                                      daily_agent, daily_model)
+                                      daily_agent, daily_model,
+                                      per_agent_model, daily_agent_model)
                             counted += 1
 
         # Incremental records
@@ -249,7 +252,8 @@ def scan_copilot(
                 add_usage(daily, per_session, per_model, per_agent,
                           usage[0], usage[1], session_key, current_model,
                           AGENT_COPILOT, creation_date,
-                          daily_agent, daily_model)
+                          daily_agent, daily_model,
+                          per_agent_model, daily_agent_model)
                 counted += 1
 
     return scanned, counted

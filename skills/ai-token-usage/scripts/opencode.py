@@ -24,6 +24,7 @@ from common import (
     CurrentSessionUsage,
     add_usage,
     parse_timestamp,
+    unify_tokens,
 )
 
 
@@ -77,6 +78,8 @@ def scan_opencode(
     session_infos: dict[str, SessionInfo],
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
+    per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
 ) -> tuple[int, int]:
     """Scan OpenCode's local SQLite database for token usage. Returns (scanned, counted)."""
     db = find_opencode_db()
@@ -94,7 +97,7 @@ def scan_opencode(
     try:
         rows = conn.execute(
             """
-            SELECT id, time_created, model, cost,
+            SELECT id, time_created, model, cost, title, directory,
                    tokens_input, tokens_output, tokens_reasoning,
                    tokens_cache_read, tokens_cache_write
             FROM session
@@ -104,6 +107,24 @@ def scan_opencode(
     except sqlite3.Error:
         conn.close()
         return 0, 0
+
+    # Per-session turn counts. OpenCode's `session` table stores only aggregate
+    # token totals (one row per session), so it cannot tell us how many
+    # exchanges a session had. The real message log lives in the `message`
+    # table; each completed assistant response is one turn.
+    msg_turns: dict[str, int] = {}
+    try:
+        for mr in conn.execute(
+            """
+            SELECT session_id, count(*) AS n
+            FROM message
+            WHERE json_extract(data, '$.role') = 'assistant'
+            GROUP BY session_id
+            """
+        ).fetchall():
+            msg_turns[mr["session_id"]] = int(mr["n"])
+    except sqlite3.Error:
+        msg_turns = {}
 
     for row in rows:
         ts = parse_timestamp(row["time_created"] or "")
@@ -123,21 +144,39 @@ def scan_opencode(
                 and cache_read == 0 and cache_write == 0:
             continue
 
-        # Unified model: output includes reasoning tokens.
-        output_unified = output_tok + reasoning
+        # Unified model: all cache tokens count as input context; reasoning
+        # folds into output. cache_read is tracked separately for cheaper
+        # pricing. Routed through the shared unify_tokens helper.
+        input_standard, output_unified, cache_read_unified = unify_tokens(
+            input_tokens=input_tok,
+            output_tokens=output_tok,
+            reasoning_tokens=reasoning,
+            cache_read=cache_read,
+            cache_write=cache_write,
+        )
         session_key = f"opencode:{row['id']}"
+        # Token-bearing sessions should have at least one assistant turn;
+        # default to 1 for sessions whose messages are not in the log.
+        turns = msg_turns.get(row["id"]) or 1
+        title = (row["title"] or "").strip()
+        directory = (row["directory"] or "").strip()
         info = SessionInfo(
             session_key=session_key,
             agent=AGENT_OPENCODE,
             model=model,
+            task=(f"{title} — {directory}".strip(" —") if title or directory else ""),
             started_at=ts.isoformat(),
+            cwd=directory,
         )
         session_infos.setdefault(session_key, info)
         add_usage(
             daily, per_session, per_model, per_agent,
-            input_tok, output_unified, session_key, model,
+            input_standard, output_unified, session_key, model,
             AGENT_OPENCODE, ts,
             daily_agent, daily_model,
+            per_agent_model, daily_agent_model,
+            turns=turns,
+            cache_read=cache_read_unified,
         )
         counted += 1
 
@@ -178,11 +217,30 @@ def analyze_current_opencode_session() -> CurrentSessionUsage | None:
     if ts:
         usage.creation_date = ts.astimezone().strftime("%Y-%m-%d %H:%M:%S")
     usage.model_name = _extract_opencode_model(row["model"])
-    prompt = int(row["tokens_input"] or 0)
-    output = int(row["tokens_output"] or 0) + int(row["tokens_reasoning"] or 0)
+    prompt, output, _ = unify_tokens(
+        input_tokens=row["tokens_input"],
+        output_tokens=row["tokens_output"],
+        reasoning_tokens=row["tokens_reasoning"],
+        cache_read=row["tokens_cache_read"],
+        cache_write=row["tokens_cache_write"],
+    )
     usage.total_prompt = prompt
     usage.total_output = output
-    usage.turns = 1
+    turns = 0
+    try:
+        tconn = sqlite3.connect(str(db))
+        turns = tconn.execute(
+            """
+            SELECT count(*) FROM message
+            WHERE json_extract(data, '$.role') = 'assistant'
+              AND session_id = ?
+            """,
+            (row["id"],),
+        ).fetchone()[0]
+        tconn.close()
+    except sqlite3.Error:
+        turns = 0
+    usage.turns = turns or 1
     usage.system_overhead_tokens = prompt  # total only; cannot separate categories
     usage.current_context_tokens = prompt
     return usage

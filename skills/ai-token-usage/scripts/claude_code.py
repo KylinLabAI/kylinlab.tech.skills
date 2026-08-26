@@ -24,6 +24,7 @@ from common import (
     add_usage,
     parse_timestamp,
     lookup_model_context_window,
+    unify_tokens,
 )
 
 
@@ -117,6 +118,8 @@ def scan_claude_code(
     session_infos: dict[str, SessionInfo],
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
+    per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
     agent_filter: str | None = None,
 ) -> tuple[int, int]:
     """Scan Claude Code session files (CLI + VS Code extension).
@@ -239,8 +242,14 @@ def scan_claude_code(
             if not isinstance(usage, dict):
                 continue
 
-            input_tok = usage.get("input_tokens") or 0
-            output_tok = usage.get("output_tokens") or 0
+            input_tok, output_tok, cache_read = unify_tokens(
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                reasoning_tokens=usage.get("reasoning_tokens")
+                or usage.get("reasoning_output_tokens"),
+                cache_read=usage.get("cache_read_input_tokens"),
+                cache_creation=usage.get("cache_creation_input_tokens"),
+            )
             if input_tok == 0 and output_tok == 0:
                 continue
 
@@ -261,6 +270,8 @@ def scan_claude_code(
                 input_tok, output_tok, session_key, current_model,
                 agent_label, ts,
                 daily_agent, daily_model,
+                per_agent_model, daily_agent_model,
+                cache_read=cache_read,
             )
             counted += 1
 
@@ -318,8 +329,13 @@ def analyze_current_claude_code_session(
         if not isinstance(u, dict):
             continue
 
-        prompt = u.get("input_tokens") or 0
-        output = u.get("output_tokens") or 0
+        prompt, output, _ = unify_tokens(
+            input_tokens=u.get("input_tokens"),
+            output_tokens=u.get("output_tokens"),
+            reasoning_tokens=u.get("reasoning_tokens") or u.get("reasoning_output_tokens"),
+            cache_read=u.get("cache_read_input_tokens"),
+            cache_creation=u.get("cache_creation_input_tokens"),
+        )
         if prompt == 0 and output == 0:
             continue
 

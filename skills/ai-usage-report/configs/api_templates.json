@@ -1,0 +1,30 @@
+{
+  "qoder": {
+    "note": "Known working direct API. scrape_usage.py --platform qoder already calls this via page.evaluate(fetch) with cookie auth.",
+    "url": "https://qoder.com.cn/api/v1/me/usages/big_model_credits/histories?page={page}&page_size=100&start_time={start}&end_time={end}&order_by=begin_at&order=-1",
+    "method": "GET",
+    "date_format": "ms",
+    "tz_offset_hours": 8,
+    "pagination": {"page_param": "page", "size": 100, "stop_when_less_than_size": true},
+    "auth": "cookie"
+  },
+  "codebuddy": {
+    "note": "Verified direct API (CodeBuddy web console). Works out of the box once the Chrome session cookies are cached; run --discover only if the endpoint/body changes.",
+    "url": "https://www.codebuddy.cn/billing/meter/get-user-request-usage",
+    "method": "POST",
+    "date_format": "datetime",
+    "tz_offset_hours": 8,
+    "pagination": {"page_param": "page", "size": 10, "stop_when_less_than_size": true},
+    "auth": "cookie",
+    "headers": {"content-type": "application/json", "x-client-platform": "web", "accept": "application/json, text/plain, */*"},
+    "body": {"startTime": "{start}", "endTime": "{end}", "pageNum": "{page}", "pageSize": 10}
+  },
+  "deepseek": {
+    "note": "Export API unknown (web console also offers a downloadable zip). Run with --discover once, or keep using the file-export path (drop the zip into raw/).",
+    "url": null,
+    "method": "GET",
+    "date_format": "date",
+    "pagination": {"page_param": "page", "size": 100, "stop_when_less_than_size": true},
+    "auth": "cookie"
+  }
+}

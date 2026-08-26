@@ -79,6 +79,13 @@ A skill with extra tool dependencies follows this pattern:
 - Keep relative links working from the skill directory.
 - Prefer additive updates over large rewrites when only one workflow step changes.
 - If a skill's capabilities materially change, update both its `SKILL.md` description and the `README.md` summary.
+- **Keep `docs/<skill-name>.md` in sync with the implementation.** Any change to
+  a skill's behavior, CLI flags, scripts, saved data files, or workflow must be
+  reflected in the human manual too — not just `SKILL.md`/`README.md`. Never
+  leave the docs describing an older or different implementation than the code.
+  When a reference file in `skills/<skill-name>/references/` is merged into or
+  removed in favor of `docs/`, update every pointer (in `SKILL.md`, `README.md`,
+  and other refs) to the new location.
 
 ## Local Skill Install — Symlink, Not Copy
 
@@ -108,5 +115,8 @@ gitignored except for that README.
 Before finishing a change:
 
 - Every shipped skill directory still has a `SKILL.md`.
-- `README.md` and `docs/` match the current `skills/*/` directories.
+- `README.md` and `docs/` match the current `skills/*/` directories **and the
+  actual implementation** (scripts, CLI flags, saved data files, workflows).
+- No `docs/` or `SKILL.md` references a file that no longer exists (e.g. a
+  removed `references/` file); dangling pointers must be repointed or deleted.
 - `.gitignore` expectations are met when adding config or generated files.

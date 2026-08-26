@@ -13,7 +13,7 @@ import json
 import os
 import sys
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,11 @@ from output import (
     print_json,
     print_current_session,
     print_availability_notes,
+    generate_chart_image,
+    render_markdown_report,
+    build_agent_view,
+    compute_model_rates,
+    build_payload,
 )
 from opencode import (
     scan_opencode,
@@ -163,6 +168,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--session-file",
         help="Path to a specific session JSONL file to analyze (used with --current-session).",
+    )
+    parser.add_argument(
+        "--currency",
+        choices=("USD", "CNY", "RMB"),
+        default="CNY",
+        help="Display currency for cost estimates (default: CNY/RMB). USD uses the "
+             "USD->CNY rate in references/pricing.json. The trend chart's cost "
+             "panel is always rendered in RMB.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="~/Desktop/ai-token-usage",
+        help="Directory for the saved .md report and trend chart image "
+             "(default: ~/Desktop/ai-token-usage). Created if missing.",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write the .md report / chart image to --output-dir; print only.",
+    )
+    parser.add_argument(
+        "--exclude-free",
+        action="store_true",
+        help="Price free-tier models at $0 instead of their paid base rate "
+             "(for a billable-only assessment). Default counts free models at "
+             "their standard rate.",
     )
     return parser.parse_args()
 
@@ -270,6 +301,8 @@ def main() -> int:
     per_agent: dict[str, UsageBucket] = defaultdict(UsageBucket)
     daily_agent: dict[str, dict[str, int]] = {}
     daily_model: dict[str, dict[str, int]] = {}
+    per_agent_model: dict[str, dict[str, UsageBucket]] = {}
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] = {}
     session_infos: dict[str, SessionInfo] = {}
 
     copilot_scanned = copilot_counted = 0
@@ -290,7 +323,7 @@ def main() -> int:
         copilot_files = len(cp_files)
         copilot_scanned, copilot_counted = scan_copilot(
             cp_files, start, end, daily, per_session, per_model, per_agent, session_infos,
-            daily_agent, daily_model
+            daily_agent, daily_model, per_agent_model, daily_agent_model
         )
 
     # Codex (CLI + VS Code extension — both live under ~/.codex)
@@ -301,7 +334,7 @@ def main() -> int:
         codex_agent_filter = args.agent if args.agent in (AGENT_CODEX_CLI, AGENT_CODEX_VSCODE) else None
         codex_scanned, codex_counted = scan_codex(
             cx_files, start, end, daily, per_session, per_model, per_agent, session_infos,
-            daily_agent, daily_model,
+            daily_agent, daily_model, per_agent_model, daily_agent_model,
             agent_filter=codex_agent_filter,
         )
 
@@ -317,7 +350,7 @@ def main() -> int:
             claude_agent_filter = args.agent
         claude_scanned, claude_counted = scan_claude_code(
             cc_files, start, end, daily, per_session, per_model, per_agent,
-            session_infos, daily_agent, daily_model,
+            session_infos, daily_agent, daily_model, per_agent_model, daily_agent_model,
             agent_filter=claude_agent_filter,
         )
 
@@ -344,6 +377,7 @@ def main() -> int:
         opencode_scanned, opencode_counted = scan_opencode(
             start, end, daily, per_session, per_model, per_agent,
             session_infos, daily_agent, daily_model,
+            per_agent_model, daily_agent_model,
         )
 
     total_scanned = (
@@ -386,6 +420,12 @@ def main() -> int:
             print_availability_notes(notes)
         return 0
 
+    import pricing as _pricing
+    _pricing.set_currency(args.currency)
+    _pricing.set_exclude_free(args.exclude_free)
+
+    notes = availability_notes()
+
     if args.format == "table":
         print_table(
             daily, per_session, per_model, per_agent, session_infos, dates,
@@ -402,15 +442,121 @@ def main() -> int:
             f"{claude_files} claude-code session files, "
             f"{total_scanned} usage records, {total_counted} in range."
         )
-        notes = availability_notes()
         print_availability_notes(notes)
     elif args.format == "csv":
         print_csv(daily, dates)
     elif args.format == "json":
-        notes = availability_notes()
         metadata["tool_availability"] = notes
-        print_json(daily, per_session, per_model, per_agent, session_infos, dates,
-                    args.top_sessions, metadata)
+        print_json(
+            daily, per_session, per_model, per_agent, session_infos, dates,
+            args.top_sessions, metadata, per_agent_model, daily_agent_model,
+        )
+
+    # Default behavior: also persist a dated report folder containing the
+    # all-agent (root) report + chart, per-agent subfolders, and raw data.
+    if not args.current_session and not args.no_save:
+        stamp = datetime.now().strftime("%Y-%m-%d")
+        date_dir = Path(os.path.expanduser(args.output_dir)).resolve() / stamp
+        date_dir.mkdir(parents=True, exist_ok=True)
+        if args.since and args.until:
+            range_desc = f"{args.since} .. {args.until}"
+        elif args.days:
+            range_desc = f"last {args.days} days ({dates[0]} .. {dates[-1]})"
+        else:
+            range_desc = f"{dates[0]} .. {dates[-1]}"
+        notes_list = [
+            f"{n['agent']}: not available locally ({n['detail']} See {n['dashboard']} for usage.)"
+            for n in notes if n["available"] == "no"
+        ]
+
+        # --- Root (all agents) report + chart ---
+        root_md = date_dir / "report.md"
+        root_png = date_dir / "chart.png"
+        rates_root = compute_model_rates(per_model)
+        try:
+            generate_chart_image(
+                daily, dates, daily_model, rates_root, str(root_png), verbose=False
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"Chart image skipped: {exc}", file=sys.stderr)
+        chart_rel = root_png.name if root_png.exists() else None
+        render_markdown_report(
+            str(root_md),
+            daily=daily, per_session=per_session, per_model=per_model,
+            per_agent=per_agent, session_infos=session_infos, dates=dates,
+            top_sessions=args.top_sessions, daily_agent=daily_agent,
+            daily_model=daily_model, chart_rel=chart_rel,
+            meta={
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "range": range_desc,
+                "agent": args.agent or "all",
+                "currency": _pricing.cost_label(),
+                "notes": notes_list,
+            },
+        )
+        print(f"\nReport saved to: {root_md}")
+        if chart_rel:
+            print(f"Chart image saved to: {root_png}")
+
+        # --- Raw data for re-analysis ---
+        raw_dir = date_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_payload = build_payload(
+            daily, per_session, per_model, per_agent, session_infos, dates,
+            args.top_sessions, metadata, per_agent_model, daily_agent_model,
+        )
+        (raw_dir / "report-data.json").write_text(
+            json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"Raw data saved to: {raw_dir / 'report-data.json'}")
+
+        # --- Per-agent subfolders ---
+        agent_groups = {
+            AGENT_CLAUDE_CLI: "claude-code",
+            AGENT_CLAUDE_VSCODE: "claude-code",
+            AGENT_CODEX_CLI: "codex",
+            AGENT_CODEX_VSCODE: "codex",
+        }
+        groups: dict[str, list[str]] = {}
+        for a in per_agent:
+            g = agent_groups.get(a, a)
+            groups.setdefault(g, []).append(a)
+        for g, members in groups.items():
+            view = build_agent_view(
+                members, g,
+                per_session=per_session, per_agent=per_agent,
+                per_agent_model=per_agent_model, session_infos=session_infos,
+                dates=dates, daily_agent_model=daily_agent_model,
+            )
+            adir = date_dir / g.replace("-", "")
+            adir.mkdir(parents=True, exist_ok=True)
+            ampng = adir / "chart.png"
+            amd = adir / "report.md"
+            rates_a = compute_model_rates(view["per_model"])
+            try:
+                generate_chart_image(
+                    view["daily"], dates, view["daily_model"], rates_a,
+                    str(ampng), verbose=False,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"Chart image skipped for {g}: {exc}", file=sys.stderr)
+            acrel = ampng.name if ampng.exists() else None
+            render_markdown_report(
+                str(amd),
+                daily=view["daily"], per_session=view["per_session"],
+                per_model=view["per_model"], per_agent=view["per_agent"],
+                session_infos=session_infos, dates=dates,
+                top_sessions=args.top_sessions, daily_agent=view["daily_agent"],
+                daily_model=view["daily_model"], chart_rel=acrel,
+                meta={
+                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "range": range_desc,
+                    "agent": g,
+                    "currency": _pricing.cost_label(),
+                    "notes": notes_list,
+                },
+            )
+            print(f"Agent report saved to: {amd}")
 
     return 0
 

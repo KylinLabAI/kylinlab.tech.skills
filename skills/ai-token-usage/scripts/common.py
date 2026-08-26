@@ -85,6 +85,7 @@ class UsageBucket:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    cache_read_tokens: int = 0
     turns: int = 0
     sessions: set[str] = field(default_factory=set)
     models: set[str] = field(default_factory=set)
@@ -97,11 +98,16 @@ class UsageBucket:
         session_key: str,
         model: str = "",
         agent: str = "",
+        turns: int = 1,
+        cache_read: int = 0,
     ) -> None:
-        self.input_tokens += input_tok
+        # Display input includes cache tokens (full token consumption);
+        # cache_read_tokens is tracked separately so cost can price it cheaper.
+        self.input_tokens += input_tok + cache_read
         self.output_tokens += output_tok
-        self.total_tokens += input_tok + output_tok
-        self.turns += 1
+        self.total_tokens += input_tok + cache_read + output_tok
+        self.cache_read_tokens += cache_read
+        self.turns += turns
         self.sessions.add(session_key)
         if model:
             self.models.add(model)
@@ -117,6 +123,7 @@ class UsageBucket:
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
                 "total_tokens": self.total_tokens,
+                "cache_read_tokens": self.cache_read_tokens,
                 "turns": self.turns,
                 "sessions": len(self.sessions),
                 "models": ", ".join(sorted(self.models)) if self.models else "",
@@ -230,6 +237,40 @@ def compact_text(value: str, limit: int = 96) -> str:
     return f"{normalized[:limit - 3]}..."
 
 
+def unify_tokens(
+    *,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    cache_read: int = 0,
+    cache_write: int = 0,
+    cache_creation: int = 0,
+) -> tuple[int, int, int]:
+    """Fold raw per-provider token fields into unified ``(input, output, cache_read)``.
+
+    Shared convention across all agent-clients so cross-agent totals are
+    comparable:
+
+    * ``cache_read`` is returned separately — it is billed at a discounted rate
+      by most providers, so the cost estimator prices it cheaper. The parser
+      still adds it into the displayed ``input`` total (full token consumption).
+    * ``cache_write`` / ``cache_creation`` are standard input-side context and
+      are folded into the returned ``input`` (billed at the standard input rate).
+    * ``reasoning`` tokens fold into ``output``.
+
+    This is the single source of truth for token counting — every parser
+    routes its raw fields through here.
+    """
+    input_standard = (
+        int(input_tokens or 0)
+        + int(cache_write or 0)
+        + int(cache_creation or 0)
+    )
+    output_unified = int(output_tokens or 0) + int(reasoning_tokens or 0)
+    cache_read = int(cache_read or 0)
+    return input_standard, output_unified, cache_read
+
+
 def format_compact(value: int) -> str:
     if value >= 1_000_000_000:
         return f"{value / 1_000_000_000:.1f}B"
@@ -246,6 +287,7 @@ def total_bucket(buckets: dict[str, UsageBucket]) -> UsageBucket:
         total.input_tokens += bucket.input_tokens
         total.output_tokens += bucket.output_tokens
         total.total_tokens += bucket.total_tokens
+        total.cache_read_tokens += bucket.cache_read_tokens
         total.turns += bucket.turns
         total.sessions.update(bucket.sessions)
         total.models.update(bucket.models)
@@ -266,19 +308,46 @@ def add_usage(
     dt: datetime,
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
+    per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
+    turns: int = 1,
+    cache_read: int = 0,
 ) -> None:
     date_key = dt.astimezone().strftime("%Y-%m-%d")
-    total_tok = input_tok + output_tok
-    daily[date_key].add(input_tok, output_tok, session_key, model, agent)
-    per_session[session_key].add(input_tok, output_tok, session_key, model, agent)
-    per_model[model].add(input_tok, output_tok, session_key, model, agent)
-    per_agent[agent].add(input_tok, output_tok, session_key, model, agent)
+    # Include cache_read so daily/per-model token totals match the bucket's
+    # total_tokens (which folds cache into the displayed input total).
+    total_tok = input_tok + cache_read + output_tok
+    daily[date_key].add(input_tok, output_tok, session_key, model, agent, turns, cache_read)
+    per_session[session_key].add(input_tok, output_tok, session_key, model, agent, turns, cache_read)
+    per_model[model].add(input_tok, output_tok, session_key, model, agent, turns, cache_read)
+    per_agent[agent].add(input_tok, output_tok, session_key, model, agent, turns, cache_read)
+    if per_agent_model is not None:
+        am = per_agent_model.setdefault(agent, {})
+        am.setdefault(model, UsageBucket()).add(
+            input_tok, output_tok, session_key, model, agent, turns, cache_read
+        )
     if daily_agent is not None:
         daily_agent.setdefault(date_key, defaultdict(int))
         daily_agent[date_key][agent] += total_tok
     if daily_model is not None:
-        daily_model.setdefault(date_key, defaultdict(int))
-        daily_model[date_key][model] += total_tok
+        dmm = daily_model.setdefault(date_key, {})
+        e = dmm.get(model)
+        if e is None:
+            dmm[model] = {"input": input_tok, "output": output_tok, "cache": cache_read}
+        else:
+            e["input"] += input_tok
+            e["output"] += output_tok
+            e["cache"] += cache_read
+    if daily_agent_model is not None:
+        dam = daily_agent_model.setdefault(date_key, {})
+        dmm = dam.setdefault(agent, {})
+        e = dmm.get(model)
+        if e is None:
+            dmm[model] = {"input": input_tok, "output": output_tok, "cache": cache_read}
+        else:
+            e["input"] += input_tok
+            e["output"] += output_tok
+            e["cache"] += cache_read
 
 
 # ---------------------------------------------------------------------------

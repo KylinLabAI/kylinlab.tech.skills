@@ -2,16 +2,18 @@
 
 ## What Problem It Solves
 
-When you want an AI coding agent to run fully autonomously — no per-command or
-per-edit approval prompts — you need the exact settings/flags for each agent.
-These differ wildly between VS Code extensions, CLIs, and standalone IDEs, and
-it's easy to miss the one master switch that actually suppresses prompts.
+AI coding agents often stop for repeated permission prompts. That is useful for
+safety, but it slows down workflows where you intentionally want the agent to run
+autonomously. To do that you need the exact per-agent settings/flags, which
+differ wildly between VS Code extensions, CLIs, and standalone IDEs — and it's
+easy to miss the one master switch that actually suppresses prompts.
 
 ## Objective
 
-Configure supported AI coding agents for fully autonomous ("auto-approve")
-operation. The skill auto-detects the active agent or lets the user specify one,
-then applies the correct configuration.
+Configure supported AI coding agents for full or granular auto-approve. The
+skill auto-detects the active agent (or lets you pick one) and applies the
+correct config, keeping the choice explicit so you understand which agent is
+being changed and what level of autonomy is enabled.
 
 ## Supported Agents
 
@@ -29,10 +31,11 @@ then applies the correct configuration.
 ## Workflow / Design
 
 1. Detect the environment (editor, parent process, session env vars).
-2. If ambiguous, ask the user which agent to configure.
-3. Apply the appropriate auto-approve config — either a settings JSON edit, a
-   CLI flag, or a project-level config file.
+2. If ambiguous, ask you which agent to configure.
+3. Apply the appropriate auto-approve config — a settings JSON edit, a CLI flag,
+   or a project-level config file.
 4. Provide a verify step and a troubleshooting table per agent.
+5. Prefer granular allow/deny lists when you do not need full auto-approval.
 
 ## Quick Reference
 
@@ -57,9 +60,42 @@ can keep destructive commands behind a prompt. See
 [`references/ai-agent-auto-approve-guide.md`](../skills/ai-agent-auto-approve/references/ai-agent-auto-approve-guide.md)
 for the full comparison matrix and security considerations.
 
+## When To Use It
+
+Use this skill when you ask for auto-approve, autonomous agent mode, fewer
+prompts, full-auto execution, or agent permission configuration.
+
+Do not use it for a normal one-time command, or when the workspace contains
+sensitive operations that need manual approval.
+
+## How To Use This Skill
+
+Ask the agent to configure a specific tool, or let it detect the current agent.
+
+Example requests:
+
+```text
+Enable full auto-approve for GitHub Copilot in this workspace.
+```
+
+```text
+Configure Codex CLI to run in full-auto mode by default.
+```
+
+## Example Usage
+
+You ask to enable Copilot auto-approval. The agent checks the VS Code settings
+location, explains the implication, updates the relevant setting, and tells you
+how to verify that future tool calls no longer prompt unnecessarily.
+
 ## Notes
 
 - No scripts or configs are shipped; this skill is pure instructions + a
   reference guide.
 - The settings shown are examples — verify against your agent's current version,
   since setting names change between releases.
+
+## Related Skill File
+
+See [`SKILL.md`](../skills/ai-agent-auto-approve/SKILL.md) for the agent-facing
+execution rules.

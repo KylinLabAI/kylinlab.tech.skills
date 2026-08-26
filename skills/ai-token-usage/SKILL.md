@@ -151,19 +151,119 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--top-sessions N` | 3 | Show top N sessions (0 to disable) |
 | `--agent` | — | Filter: `copilot`, `codex` (all), `codex-cli`, `codex-vscode`, `claude-code` (all), `claude-cli`, `claude-vscode`, `qoder`, `codebuddy`, `trae`, `opencode`, or `cloudecode` |
 | `--no-chart` | false | Skip the daily ASCII trend chart |
-| `--chart-file PATH` | — | Save matplotlib chart image (PNG) with 3 panels: total, by-agent, by-model |
+| `--chart-file PATH` | — | Save matplotlib chart image (PNG) with 5 panels: daily tokens by model (stacked), daily cost (RMB, exact from input/output/cache split), daily sessions, daily turns, and model usage share pie |
 | `--chart-width N` | 48 | Max bar width for ASCII trend chart |
 | `--no-archived` | false | Skip Codex archived sessions |
 | `--no-subagents` | false | Exclude Claude Code subagent sessions from token counts |
 | `--current-session` | false | Show context usage for the current (most recent) Copilot, Codex, or Claude Code session |
 | `--session-file` | — | Path to a specific session JSONL file (with `--current-session`) |
+| `--currency` | CNY | Display currency for cost estimates: `USD`, `CNY`, or `RMB`. Default is CNY (RMB); the trend chart's cost panel is always RMB regardless. |
+| `--output-dir` | `~/Desktop/ai-token-usage` | Directory for the saved `.md` report + trend chart image (created if missing). |
+| `--no-save` | false | Do not write the `.md` report / chart image; print only. |
+| `--exclude-free` | false | Price free-tier models at $0 instead of their paid base rate (billable-only view). Default counts free models at their standard rate. |
 | `--vscode-data` | auto | VS Code user-data directory |
 | `--codex-home` | ~/.codex | Codex home directory |
 | `--claude-projects-dir` | ~/.claude/projects | Claude Code projects directory |
 
-## Other AI Coding Tools — Token Usage
+### Saved report file (default behavior)
 
-OpenCode token usage **is** tracked locally via its SQLite database. The other
+In addition to printing to the terminal, the skill **always** writes a
+persisted, dated report folder to `--output-dir` (default
+**`~/Desktop/ai-token-usage`**). The folder is created if it does not exist.
+Layout (the date is the generation date, `YYYY-MM-DD`):
+
+```
+<output-dir>/<YYYY-MM-DD>/
+  report.md            # all agents (root) — fixed template
+  chart.png            # 5-panel trend chart (see below)
+  raw/
+    report-data.json   # full structured data for re-analysis
+  <agent>/             # one folder per agent group (e.g. opencode, claudecode, copilot)
+    report.md          # that agent's report (same template)
+    chart.png          # that agent's chart
+```
+
+- **Root `report.md`** — a self-contained markdown report using a **fixed
+  template** (Summary → Usage by Agent → Usage by Model → Top N Sessions →
+  Daily Usage → Trend Chart → Notes) so every run is comparable. Cost is shown
+  in the selected `--currency`.
+- **`chart.png`** (root and per-agent) — a 5-panel trend chart:
+  1. Daily token usage **by model** (stacked; combines the former by-agent +
+     by-model panels),
+  2. Daily **cost (RMB)**,
+  3. Daily **sessions**,
+  4. Daily **turns**,
+  5. **Model usage share** pie.
+  Generated with matplotlib; if matplotlib is unavailable, the PNG is skipped
+  and the markdown notes the absence.
+- **`raw/report-data.json`** — the complete aggregated payload (daily,
+  per-session, per-model, per-agent, `per_agent_model`, `daily_agent_model`,
+  costs, tool availability) so you can run your own analyses or rebuild a
+  report without re-scanning.
+- **Per-agent folders** — `claude-cli` + `claude-vscode` are grouped into
+  `claudecode`; `codex-cli` + `codex-vscode` into `codex`. Each gets its own
+  `report.md` + `chart.png`.
+
+Use `--no-save` to print only (e.g. for quick terminal checks), or point
+`--output-dir` elsewhere to collect reports.
+
+```bash
+# Default: prints table AND saves dated folder to ~/Desktop/ai-token-usage
+python3 scripts/ai_token_usage.py --days 30
+
+# Include opencode, claude-code, and copilot (default already scans all)
+python3 scripts/ai_token_usage.py --days 30
+
+# Save to a custom folder, no terminal chart
+python3 scripts/ai_token_usage.py --days 30 --output-dir ~/reports --no-chart
+
+# Print only, do not save
+python3 scripts/ai_token_usage.py --days 7 --no-save
+```
+
+## Cost / Price estimation
+
+The report estimates spend by multiplying token counts by each model's
+per-1M-token price. Prices come from a **saved table**
+(`references/pricing.json`), not from live calls at report time, so reports
+stay offline and fast.
+
+### Refreshing the price table (monthly)
+
+`scripts/fetch_pricing.py` pulls the latest rates from each provider's
+official pricing page and rewrites `references/pricing.json`. Schedule it
+monthly, e.g.:
+
+```bash
+# cron: 0 9 1 * *  cd /path/to/skills/ai-token-usage && python3 scripts/fetch_pricing.py
+python3 scripts/fetch_pricing.py            # refresh + write file
+python3 scripts/fetch_pricing.py --check    # warn if file older than 35 days
+python3 scripts/fetch_pricing.py --dry-run  # print, don't write
+```
+
+The saved table also stores the **USD→CNY exchange rate** (`fx.USD_CNY`),
+best-effort fetched live and falling back to an embedded default.
+
+### How cost is computed
+
+- `opencode.py` / `codex.py` / `claude_code.py` route raw token fields through
+  the shared `unify_tokens` helper so all clients count cache identically.
+  Cache reads are tracked **separately** so they are priced at the cheaper
+  cache-read rate instead of the standard input rate.
+- `scripts/pricing.py` matches each model name (case-insensitive; `*free*`
+  models and unknown models cost $0 / are skipped) and returns an estimate.
+- Default is `--currency CNY` (RMB); use `--currency USD` for US dollars.
+
+```bash
+python3 scripts/ai_token_usage.py --days 30 --currency CNY
+python3 scripts/ai_token_usage.py --days 30 --format json --agent opencode
+```
+
+Cost is an **estimate**: providers bill cached tokens cheaper, and the saved
+table's `input` rate is the standard (non-cached) list rate. Treat it as a
+close approximation, not an invoice.
+
+## Other AI Coding Tools — Token UsageOpenCode token usage **is** tracked locally via its SQLite database. The other
 VS Code-derived IDEs do not persist token counts in local files; this skill
 reports their availability and points to the server-side dashboard.
 
@@ -182,7 +282,8 @@ exist — that is expected, not a bug.
 
 Claude Code token usage is tracked by this skill via `~/.claude/projects/` JSONL logs.
 
-See `references/ai-token-usage-guide.md` § "Other AI Coding Tools" for details.
+See the human manual [`docs/ai-token-usage.md`](../../../docs/ai-token-usage.md) § "Reference Guide" for details on
+non-parseable tools (TRAE, CodeBuddy) and per-agent token calculation.
 
 ## Output sections (table format)
 

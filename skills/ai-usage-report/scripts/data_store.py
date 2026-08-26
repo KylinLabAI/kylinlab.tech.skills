@@ -38,7 +38,8 @@ ROOT = os.environ.get(
     "AI_USAGE_ROOT",
     os.path.join(os.path.expanduser("~/Desktop"), "ai-usage-report"),
 )
-FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "requests", "row_id"]
+FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "requests",
+          "request_id", "row_id"]
 DATE_FMT = "%Y-%m-%d"
 # Cost tolerance for dedup: platforms may return the same logical cost with
 # tiny float/currency-conversion differences across re-fetches. Treat anything
@@ -146,6 +147,7 @@ def _dedup_key(r):
         str(r.get("model", "") or ""),
         round(_canon_cost(r), 4),
         bool(r.get("free", False)),
+        str(r.get("request_id", "") or ""),
     )
 
 
@@ -171,6 +173,9 @@ def _row_id(r):
     h.update(str(r.get("free", False)).encode("utf-8"))
     h.update(b"|")
     h.update(str(r.get("platform", "")).encode("utf-8"))
+    h.update(b"|")
+    rid = str(r.get("request_id", "") or "")
+    h.update(rid.encode("utf-8"))
     return h.hexdigest()[:20]
 
 

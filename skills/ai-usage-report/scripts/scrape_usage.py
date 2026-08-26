@@ -42,6 +42,8 @@ try:
 except ImportError:
     sync_playwright = None
 
+import data_store  # persistent store root + helpers
+
 
 PLATFORM_KEYWORDS = {
     # Qoder (国内个人版) — confirmed against live usage page
@@ -159,6 +161,11 @@ def _coerce_record(rec, platform):
 
     dt = _parse_dt(dt_raw)
 
+    # unique request/session id, when the platform provides one (used to keep
+    # genuinely distinct requests from being collapsed by the store dedup).
+    rid = (rec.get("requestId") or rec.get("request_id") or rec.get("id")
+           or rec.get("sessionId") or rec.get("session_id") or "")
+
     # numeric coercion
     try:
         cost = float(str(cost_raw).replace(",", ""))
@@ -177,7 +184,405 @@ def _coerce_record(rec, platform):
     return {
         "date": dt, "model": str(model), "cost": cost,
         "free": bool(free), "prompt": str(prompt or ""), "platform": platform,
+        "request_id": str(rid) if rid else "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Direct-API auto-download (cookie-auth via the persistent Chrome profile)
+#
+# Platforms that expose a usage/export REST API can be pulled directly with a
+# date range: NO manual file download, and (once cookies are cached) NO manual
+# login. The Qoder endpoint is known; CodeBuddy/DeepSeek endpoints are captured
+# once via `--discover` and saved to <AI_USAGE_ROOT>/config/<p>_api.json (this
+# lives under the data root, outside the repo, so it is never committed).
+# ---------------------------------------------------------------------------
+
+def _api_spec_path(platform):
+    return os.path.join(data_store.ROOT, "config", f"{platform.lower()}_api.json")
+
+
+def load_api_spec(platform):
+    """Live, user-captured spec wins; else fall back to committed template."""
+    live = _api_spec_path(platform)
+    if os.path.exists(live):
+        try:
+            with open(live, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    tmpl = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "configs", "api_templates.json")
+    try:
+        with open(tmpl, "r", encoding="utf-8") as f:
+            return json.load(f).get(platform.lower())
+    except Exception:
+        return None
+
+
+def save_api_spec(platform, spec):
+    d = os.path.dirname(_api_spec_path(platform))
+    os.makedirs(d, exist_ok=True)
+    with open(_api_spec_path(platform), "w", encoding="utf-8") as f:
+        json.dump(spec, f, indent=2, ensure_ascii=False)
+    print(f"[discover] saved API spec -> {_api_spec_path(platform)}")
+
+
+def _build_date_tokens(start, end, fmt, tz_offset_hours=0):
+    """Return (start_token, end_token) strings for the given date_format."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    if fmt == "ms":
+        tz = _tz(_td(hours=tz_offset_hours))
+        s = _dt.combine(start, _dt.min.time(), tzinfo=tz)
+        e = _dt.combine(end + _td(days=1), _dt.min.time(), tzinfo=tz)
+        return str(int(s.timestamp() * 1000)), str(int(e.timestamp() * 1000) - 1)
+    if fmt == "datetime":
+        # "yyyy-MM-dd HH:mm:ss" in the given timezone (default Beijing).
+        tz = _tz(_td(hours=tz_offset_hours))
+        s = _dt.combine(start, _dt.min.time(), tzinfo=tz)
+        e = _dt.combine(end, _dt.max.time(), tzinfo=tz)
+        return s.strftime("%Y-%m-%d %H:%M:%S"), e.strftime("%Y-%m-%d %H:%M:%S")
+    if fmt == "iso":
+        return start.isoformat(), end.isoformat()
+    # default: yyyy-mm-dd
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def _origin_of(url):
+    """Return the scheme://netloc origin of a URL."""
+    import urllib.parse as _up
+    return _up.urlunparse(_up.urlparse(url)._replace(path="", query="",
+                                                    fragment=""))
+
+
+def _fetch_json_via_page(page, url, headers=None):
+    """Call the API from inside the page so the persistent profile's cookies
+    (cookie auth) are sent automatically. Returns parsed JSON, or a dict with
+    `__error`/`__text` on failure."""
+    return page.evaluate("""async (args) => {
+        const {url, headers} = args;
+        try {
+            const r = await fetch(url, {credentials: 'include', headers: headers || {}});
+            if (!r.ok) return {__error: r.status};
+            const ct = r.headers.get('content-type') || '';
+            if (ct.indexOf('application/json') !== -1) return await r.json();
+            return {__text: await r.text()};
+        } catch (e) { return {__error: String(e)}; }
+    }""", {"url": url, "headers": headers or {}})
+
+
+def _capture_via_api(platform, page, start, end):
+    """Pull usage via a configured REST endpoint with a date range.
+
+    Returns a list of normalized records, or None if no spec / no url is
+    configured (caller should fall back to the UI-intercept flow).
+    """
+    spec = load_api_spec(platform)
+    if not spec or not spec.get("url"):
+        return None
+    fmt = spec.get("date_format", "date")
+    tz = spec.get("tz_offset_hours", 0)
+    s_tok, e_tok = _build_date_tokens(start, end, fmt, tz)
+    pg = spec.get("pagination", {}) or {}
+    page_param = pg.get("page_param", "page")
+    size = pg.get("size", 100)
+    stop_less = pg.get("stop_when_less_than_size", True)
+    base = spec["url"]
+    tmpl_body = spec.get("body")
+    body_str_tmpl = (json.dumps(tmpl_body, ensure_ascii=False)
+                     if isinstance(tmpl_body, dict) else (tmpl_body or ""))
+    has_page_token = ("{page}" in base) or ("{page}" in body_str_tmpl)
+    headers = spec.get("headers", {})
+    method = (spec.get("method") or "GET").upper()
+
+    collected = []
+    pno = 1
+    while True:
+        url = (base.replace("{page}", str(pno))
+                   .replace("{start}", s_tok)
+                   .replace("{end}", e_tok))
+        if method == "POST":
+            # Substitute placeholders at the DICT level so numeric fields
+            # (e.g. pageNum) stay integers instead of becoming strings.
+            if isinstance(tmpl_body, dict):
+                body = json.loads(json.dumps(tmpl_body))  # deep copy
+                for k in list(body.keys()):
+                    v = body[k]
+                    if v == "{start}":
+                        body[k] = s_tok
+                    elif v == "{end}":
+                        body[k] = e_tok
+                    elif v == "{page}":
+                        body[k] = pno
+            else:
+                body = {}
+            if pno == 1:
+                print(f"[api] POST {url}\n[api] body: {body}")
+            try:
+                payload = page.evaluate("""async (args) => {
+                    const {url, headers, body} = args;
+                    try {
+                        const r = await fetch(url, {method:'POST', credentials:'include',
+                            headers: Object.assign({'content-type':'application/json'}, headers||{}),
+                            body: JSON.stringify(body)});
+                        if (!r.ok) return {__error: r.status};
+                        return await r.json();
+                    } catch (e) { return {__error: String(e)}; }
+                }""", {"url": url, "headers": headers, "body": body})
+            except Exception as e:
+                print(f"[api] evaluate error: {e!r}")
+                payload = {"__error": str(e)}
+        else:
+            payload = _fetch_json_via_page(page, url, headers)
+
+        if not payload:
+            break
+        if isinstance(payload, dict) and payload.get("__error"):
+            print(f"[api] {platform} page {pno}: error {payload['__error']}")
+            break
+        if isinstance(payload, dict) and payload.get("__text"):
+            # Non-JSON (likely a login redirect / HTML) -> session expired.
+            print(f"[api] {platform} page {pno}: non-JSON response "
+                  f"({payload['__text'][:50]!r}); session may be expired.")
+            break
+
+        records = _extract_list(payload)
+        if pno == 1 and records:
+            print(f"[api] sample record fields: {list(records[0].keys())}")
+        if records:
+            norm = [_coerce_record(r, platform) for r in records]
+            collected.extend(norm)
+            print(f"[api] {platform} page {pno}: +{len(norm)} (total {len(collected)})")
+        if not has_page_token:
+            break
+        if stop_less and (not records or len(records) < size):
+            break
+        pno += 1
+
+    if not collected:
+        return None
+    return collected
+
+
+def discover(platform, usage_url, login_url=None, keyword=None,
+             headless=False, profile_dir=None):
+    """One-time helper: open the platform, let the user log in and load the
+    usage/export page, then capture the underlying REST request so it can be
+    replayed directly later (no manual file download)."""
+    if sync_playwright is None:
+        raise RuntimeError("playwright not installed. Run: pip install playwright")
+    kw = keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage")
+    profile_dir = profile_dir or os.path.join(
+        os.path.expanduser("~/Library/Caches"), "ai_usage_profile")
+    os.makedirs(profile_dir, exist_ok=True)
+
+    candidates = []   # real data-API candidates (JSON XHR/fetch, not tracking)
+    raw = []           # every request, for debugging when nothing is found
+
+    TRACK = ("google", "doubleclick", "ping.", "tencent.com/traffic",
+             "googletagmanager", "adservice", "hotjar", "segment", "m.qq.com",
+             "beacon.qq.com")
+
+    # Endpoints that are clearly NOT the usage-data API (login / auth / analytics).
+    NON_DATA = ("login", "auth", "risk", "gray", "feature", "event",
+                "track", "report", "/plugin", "oneid", "gray-decision")
+    DATA_HINT = ("usage", "bill", "cost", "export", "stat", "consume",
+                 "credit", "quota", "point", "history", "record", "list")
+    # Field names that mark a REAL usage-records response (schema-agnostic).
+    USAGE_FIELDS = ("model", "credit", "cost", "usage", "requesttime",
+                    "requestid", "amount", "points", "consume", "records",
+                    "histories", "sessions", "prompt", "tokencount", "fee",
+                    "modelname", "creditcost")
+
+    def _body_score(body):
+        if body is None:
+            return 0
+        try:
+            blob = json.dumps(body, ensure_ascii=False).lower()
+        except Exception:
+            return 0
+        return sum(1 for h in USAGE_FIELDS if h in blob)
+
+    def _data_cands():
+        """Candidates that are not login/auth/tracking AND look like a usage
+        records API (their response body contains usage-schema fields)."""
+        out = []
+        for c in candidates:
+            u = c["url"].lower()
+            if any(nd in u for nd in NON_DATA):
+                continue
+            if _body_score(c.get("body")) <= 0:
+                continue
+            out.append(c)
+        return out
+
+    def _is_track(url):
+        return any(h in url for h in TRACK)
+
+    def on_response(resp):
+        url = resp.url
+        raw.append((resp.request.method, url))
+        # Real data APIs are almost always XHR/fetch returning JSON.
+        if resp.request.resource_type not in ("xhr", "fetch"):
+            return
+        ct = resp.headers.get("content-type", "")
+        if "application/json" not in ct or resp.status != 200:
+            return
+        if _is_track(url):
+            return
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        try:
+            req_body = resp.request.post_data
+        except Exception:
+            req_body = None
+        try:
+            req_headers = dict(resp.request.headers)
+        except Exception:
+            req_headers = {}
+        candidates.append({"method": resp.request.method, "url": url,
+                           "body": body, "req_body": req_body,
+                           "req_headers": req_headers,
+                           "score": _body_score(body)})
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            profile_dir, channel="chrome", headless=headless)
+        page = context.new_page()
+        page.on("response", on_response)
+        if login_url:
+            page.goto(login_url)
+            page.wait_for_load_state("domcontentloaded")
+        if usage_url:
+            try:
+                page.goto(usage_url)
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception as e:
+                print(f"[discover] could not open {usage_url}: {e}")
+                print("           open the correct usage page manually in the "
+                      "browser window, then the data API will be captured.")
+        print("\n[discover] Opened Chrome on the usage page.")
+        print("        Log in MANUALLY (incl. OTP) if prompted. Once the usage "
+              "table/export loads, the data API fires and is captured.\n")
+        # Stay open until a REAL data API appears (login/auth/analytics no longer
+        # count), or until the 10-minute timeout.
+        deadline = time.time() + 600
+        nudged = False
+        while not _data_cands() and time.time() < deadline:
+            page.wait_for_timeout(2000)
+            # Nudge: after ~25s, if logged in but the table hasn't loaded,
+            # re-open the usage page to trigger the API.
+            if not nudged and time.time() - (deadline - 600) > 25 and usage_url:
+                nudged = True
+                try:
+                    page.goto(usage_url)
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+        page.wait_for_timeout(4000)  # catch pagination / range requests too
+        context.close()
+
+    if not candidates:
+        print("[discover] no JSON API response captured (likely not logged in, "
+              "or the data loads via a non-JSON channel).")
+        same_host = [u for m, u in raw if platform.lower() in u or "codebuddy" in u]
+        if same_host:
+            print("[discover] requests seen on the platform host:")
+            for u in same_host[:15]:
+                print("           " + u[:140])
+        print("[discover] re-run after logging in and letting the table load.")
+        return
+
+    data = _data_cands()
+    if not data:
+        print("[discover] only login/auth/analytics JSON endpoints were seen — "
+              "the usage data API never fired.")
+        print("           Log in fully and let the usage table load, then re-run.")
+        print("[discover] JSON endpoints seen (for reference):")
+        for c in candidates:
+            print("           " + c["url"][:140])
+        return
+
+    print(f"\n[discover] captured {len(data)} usage-records API candidate(s):")
+    for i, c in enumerate(data):
+        print(f"  {i + 1}. [{c['method']}] score={c['score']} {c['url'][:130]}")
+
+    # Prefer the candidate whose response body best matches the usage schema;
+    # if tied, prefer the explicitly "request-usage" / "usage" endpoint.
+    best_score = max(c["score"] for c in data)
+    top = [c for c in data if c["score"] == best_score]
+    pick = next((c for c in top
+                 if re.search(r"request-usage|usage", c["url"], re.I)), top[0])
+    print("[discover] picked:", pick["url"])
+    print("[discover] picked request body (raw):", pick.get("req_body"))
+    # Replay the exact request headers (minus cookie, which credentials:'include'
+    # sends) so the API accepts our call just like the page's own fetch.
+    import urllib.parse as _up
+    parsed = _up.urlparse(pick["url"])
+    q = _up.parse_qs(parsed.query)
+    cleaned = {}
+    for k, vals in q.items():
+        v = vals[0] if vals else ""
+        if re.search(r"(time|date|start|end|from|to)", k, re.I) and re.search(r"\d{4}", v):
+            v = "{start}" if re.search(r"start|from", k, re.I) else "{end}"
+        cleaned[k] = v
+    new_q = "&".join(f"{k}={v}" for k, v in cleaned.items())
+    stub_url = _up.urlunparse(parsed._replace(query=new_q))
+
+    spec = {
+        "note": f"Auto-discovered for {platform}. Replace date values with "
+                f"{{start}}/{{end}} and add {{page}} if the API paginates. "
+                f"date_format is guessed as 'date' (use 'ms' for epoch-ms).",
+        "url": stub_url,
+        "method": pick["method"],
+        "date_format": "date",
+        "pagination": {"page_param": "page", "size": 100,
+                       "stop_when_less_than_size": True},
+        "auth": "cookie",
+    }
+    # Replay the exact request headers (minus cookie, sent via credentials) so
+    # the API accepts our call like the page's own fetch does.
+    rh = pick.get("req_headers") or {}
+    spec["headers"] = {k: v for k, v in rh.items()
+                       if k.lower() not in ("cookie", "content-length")}
+    # If it was a POST, keep the REQUEST body as a template and blank any
+    # date-like / page fields so the caller can substitute {start}/{end}/{page}.
+    if pick["method"] == "POST" and pick.get("req_body"):
+        raw_b = pick["req_body"]
+        try:
+            bd = json.loads(raw_b) if isinstance(raw_b, str) else raw_b
+        except Exception:
+            bd = raw_b
+        if isinstance(bd, dict):
+            for k, v in list(bd.items()):
+                kl = k.lower()
+                if isinstance(v, (str, int)) and re.search(r"(time|date|start|end|from|to)", kl):
+                    sv = str(v)
+                    if re.search(r"\d{4}", sv):
+                        # "yyyy-MM-dd HH:mm:ss" -> datetime (Beijing) format
+                        if re.search(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", sv):
+                            spec["date_format"] = "datetime"
+                            spec["tz_offset_hours"] = 8
+                        # epoch milliseconds -> ms date_format
+                        elif re.search(r"^\d{12,}$", sv):
+                            spec["date_format"] = "ms"
+                        bd[k] = "{start}" if re.search(r"start|from", kl) else "{end}"
+                elif re.search(r"pagesize|perpage|limit|size", kl):
+                    # Keep the original page-size value; align stop-detection.
+                    try:
+                        spec["pagination"]["size"] = int(v)
+                    except Exception:
+                        pass
+                elif re.search(r"page", kl):
+                    bd[k] = "{page}"
+            spec["body"] = bd
+
+    save_api_spec(platform, spec)
+    print(f"[discover] saved stub spec (platform={platform}). Edit if needed:")
+    print(f"           {_api_spec_path(platform)}")
+    print("[discover] re-run capture normally; it will call the API directly.")
 
 
 def _extract_list(payload):
@@ -288,8 +693,11 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                 # per-request list. Merge amount + cost responses.
                 _ingest_deepseek(url, payload, state)
                 return
-            records = _extract_list(payload)
-            if records:
+        records = _extract_list(payload)
+        if not records and isinstance(payload, dict):
+            print(f"[api] {platform} page {pno}: JSON but no list extracted; "
+                  f"keys={list(payload.keys())[:8]} sample={str(payload)[:160]}")
+        if records:
                 norm = [_coerce_record(r, platform) for r in records]
                 state["collected"].extend(norm)
                 print(f"[capture] +{len(norm)} ({len(state['collected'])} total) "
@@ -302,6 +710,34 @@ def capture(platform, usage_url, login_url=None, keyword=None,
             profile_dir, channel="chrome", headless=headless)
         page = context.new_page()
         page.on("response", on_response)
+
+        # Auto-download via direct API (cookie auth from the persistent
+        # profile). Skips the UI entirely when the session is still valid;
+        # falls back to the manual-login UI flow when cookies are missing /
+        # expired (e.g. first run).
+        if platform.lower() in ("codebuddy", "deepseek"):
+            spec = load_api_spec(platform)
+            if spec and spec.get("url") and start and end:
+                # Land on a SAME-ORIGIN page first, otherwise page.evaluate's
+                # fetch() is cross-origin and Chromium blocks it (CORS).
+                _land = usage_url or _origin_of(spec["url"])
+                if _land:
+                    try:
+                        page.goto(_land)
+                        page.wait_for_load_state("domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                api_records = _capture_via_api(platform, page, start, end)
+                if api_records:
+                    print(f"[api] auto-downloaded {len(api_records)} records "
+                          f"via API (no manual login / download).")
+                    context.close()
+                    warnings = _self_check(
+                        platform, api_records, start, end,
+                        keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage"))
+                    return api_records, warnings
+                print("[api] no data via API (session expired or empty range); "
+                      "falling back to manual login + UI capture.")
 
         def _wait_for_login_and_data():
             """Block until the user finishes manual login (incl. OTP) AND the
@@ -640,7 +1076,15 @@ def main():
     ap.add_argument("--no-backfill", action="store_true",
                     help="do not force re-fetch of the previous pull's final day "
                          "(set this only if you are certain that day is complete)")
+    ap.add_argument("--discover", action="store_true",
+                    help="capture the platform's usage API endpoint for future "
+                         "automatic download (one-time setup)")
     args = ap.parse_args()
+
+    if args.discover:
+        discover(args.platform, args.url, args.login_url, args.keyword,
+                 args.headless, args.profile_dir)
+        return
 
     # Resolve requested date range (used for incremental storage + Qoder UI).
     req_start = req_end = None

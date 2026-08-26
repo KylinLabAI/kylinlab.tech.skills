@@ -19,6 +19,7 @@ from common import (
     compact_text,
     add_usage,
     parse_timestamp,
+    unify_tokens,
 )
 
 
@@ -95,6 +96,8 @@ def scan_codex(
     session_infos: dict[str, SessionInfo],
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
+    per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
     agent_filter: str | None = None,
 ) -> tuple[int, int]:
     """Scan Codex session files (CLI + VS Code extension). Returns (scanned, counted).
@@ -185,14 +188,21 @@ def scan_codex(
             if timestamp is None or timestamp < start or timestamp >= end or not _has_usage(delta):
                 continue
 
-            # Map Codex fields → unified (input, output)
-            input_tok = delta["input_tokens"]
-            output_tok = delta["output_tokens"] + delta["reasoning_output_tokens"]
+            # Map Codex fields → unified (input, output, cache_read) via the
+            # shared helper. cached_input_tokens are cache reads (cheaper).
+            input_tok, output_tok, cache_read = unify_tokens(
+                input_tokens=delta["input_tokens"],
+                output_tokens=delta["output_tokens"],
+                reasoning_tokens=delta["reasoning_output_tokens"],
+                cache_read=delta["cached_input_tokens"],
+            )
 
             add_usage(daily, per_session, per_model, per_agent,
                       input_tok, output_tok, session_key, current_model,
                       agent_label, timestamp,
-                      daily_agent, daily_model)
+                      daily_agent, daily_model,
+                      per_agent_model, daily_agent_model,
+                      cache_read=cache_read)
             counted += 1
 
     return scanned, counted
@@ -253,8 +263,12 @@ def analyze_current_codex_session(session_path: Path, lines: list[str]) -> Curre
         if not _has_usage(delta):
             continue
 
-        prompt = delta["input_tokens"]
-        output = delta["output_tokens"] + delta["reasoning_output_tokens"]
+        prompt, output, _ = unify_tokens(
+            input_tokens=delta["input_tokens"],
+            output_tokens=delta["output_tokens"],
+            reasoning_tokens=delta["reasoning_output_tokens"],
+            cache_read=delta["cached_input_tokens"],
+        )
         usage.per_turn.append({"prompt": prompt, "output": output})
         usage.total_prompt += prompt
         usage.total_output += output

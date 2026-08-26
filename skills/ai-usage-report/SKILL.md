@@ -111,6 +111,51 @@ Per-platform API keyword hints (override with `--keyword`):
 > manually after the login step. Qoder's date range is selected in the UI
 > (custom range if `--start`/`--end` given, else "最近30天" preset).
 
+## Auto-download via direct API (no manual export)
+
+For platforms that expose a usage/export REST API, `scrape_usage.py` can pull
+data **directly with a date range** using the persistent Chrome profile's
+cookies — so there is **no manual "export / download" click** and, once the
+session is cached, **no manual login** either. This is the preferred path over
+the file-export workflow for those platforms.
+
+- **Qoder**: works out of the box (endpoint is baked into
+  `configs/api_templates.json`). The scraper calls
+  `usages/big_model_credits/histories` with `start_time`/`end_time` (epoch ms,
+  Beijing time) and paginates.
+- **CodeBuddy**: works out of the box — the endpoint is baked into
+  `configs/api_templates.json` (`/billing/meter/get-user-request-usage`, POST
+  with a `yyyy-MM-dd HH:mm:ss` Beijing-time range). The first run logs in once
+  (cookie cached in the persistent profile); every later run is fully automatic.
+- **DeepSeek**: run a one-time discovery to capture the real endpoint, then every
+  later run is automatic:
+
+  ```bash
+  # 1) One-time: log in, open the usage/export page, capture the API request
+  python3 scrape_usage.py --platform deepseek \
+    --url https://platform.deepseek.com/usage --discover
+
+  # 2) From now on: fully automatic (cookie auth, date-range API call)
+  python3 scrape_usage.py --platform deepseek --url <usage-page> \
+    --start 2026-07-13 --end 2026-08-11
+  ```
+
+  CodeBuddy one-time discovery (only if the endpoint/body ever changes):
+  ```bash
+  python3 scrape_usage.py --platform codebuddy \
+    --url https://www.codebuddy.cn/profile/plans-usage --discover
+  ```
+
+  `--discover` saves the captured endpoint to
+  `<AI_USAGE_ROOT>/config/<platform>_api.json` (outside the repo, never
+  committed). Edit the saved stub if date placeholders (`{start}`/`{end}`)
+  or a `{page}` token need adjusting. `date_format` is `"date"` by default;
+  set `"ms"` for epoch-millisecond APIs (like Qoder) with `tz_offset_hours`.
+
+If no API spec is configured (or the cached session expired), the scraper
+falls back to the manual-login + UI-intercept flow described above, so the
+existing behavior is preserved.
+
 ## Usage (analyze)
 
 ```bash
