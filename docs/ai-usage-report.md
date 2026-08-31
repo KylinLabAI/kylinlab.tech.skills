@@ -8,17 +8,21 @@ CSV/JSON. You want one statistical, visual report across all of them for
 cross-platform comparison of spend and model distribution, without hand-crunching
 numbers.
 
-## ⚠️ 关键注意事项（易错点）
+## ⚠️ Key Caveats (Common Pitfalls)
 
-1. **费用单位不可相加**：各平台 `cost` 列单位不同——
-   Qoder / DeepSeek 为「人民币/额度 (CNY/RMB)」，TRAE / CodeBuddy 为「积分(points)」。
-   跨平台只比较「请求数、活跃天数、Top 模型」等无量纲指标。
-2. **抓全 ≠ 抓对**：浏览器分页/滚动若没真正触发下一页请求，会**静默漏数据**。
-   因此每次抓取后**必须**跑 `verify_data.py` 或让 `build_report.py` 自动校验，
-   缺失超过 50% 的天数会直接中止出报告。
-3. **Qoder 抓取已修正**：`_fetch_qoder_api_pages` 直接解析 `page.evaluate()`
-   返回的 JSON（不再依赖 Playwright 的 `on_response`，旧实现会丢分页），
-   日期范围按北京时间 UTC+8 转 epoch-ms。
+1. **Cost units are not additive**: each platform's `cost` column uses a
+   different unit — Qoder / DeepSeek are in CNY/RMB, while TRAE / CodeBuddy are
+   in points. For cross-platform comparison, only compare dimensionless metrics
+   like request count, active days, and Top models.
+2. **Fetching everything ≠ fetching correctly**: if browser pagination/
+   scrolling doesn't actually trigger the next-page request, data is **silently
+   dropped**. Therefore, after every capture you **must** run `verify_data.py`
+   or let `build_report.py` auto-verify; if more than 50% of days are missing,
+   report generation aborts.
+3. **Qoder capture fixed**: `_fetch_qoder_api_pages` now parses the JSON
+   returned by `page.evaluate()` directly (no longer relying on Playwright's
+   `on_response`, which dropped paginated data in the old implementation), and
+   date ranges are converted to epoch-ms in Beijing time (UTC+8).
 
 ## Objective
 
@@ -54,7 +58,7 @@ across partial fetches.
 
 | Platform | Format | Notes |
 |----------|--------|-------|
-| CodeBuddy | `.xlsx` (sheet `Usage Details`) | columns: `RequestID, 积分消耗, User Prompt, 模型, 客户端, 时间` |
+| CodeBuddy | `.xlsx` (sheet `Usage Details`) | columns: `RequestID, Points Consumed, User Prompt, Model, Client, Time` |
 | DeepSeek | `.zip` (contains `cost-*.csv` + `amount-*.csv`) | daily aggregated cost + token breakdown |
 | Qoder / TRAE / generic | `.csv` / `.xlsx` / `.json` | best-effort column detection |
 
@@ -164,8 +168,8 @@ Flags:
 
 ## Example Usage
 
-用户："用 ai-usage-report 生成 qoder/codebuddy/trae/deepseek 近 30 天用量分析"
-→ 逐平台 scrape（补齐缺失范围）→ verify → build → cross_platform_report。
+User: "Use ai-usage-report to generate a ~30-day usage analysis for qoder/codebuddy/trae/deepseek"
+→ scrape per platform (fill missing ranges) → verify → build → cross_platform_report.
 
 ## Privacy / Safety
 

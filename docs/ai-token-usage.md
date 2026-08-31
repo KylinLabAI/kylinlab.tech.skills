@@ -118,8 +118,9 @@ per-1M-token price, read from the saved table **`skills/ai-token-usage/reference
 - Some models are priced from a **reseller** rather than the original vendor:
   `hy3` and `mimo-v2.5` use **Tencent Cloud TokenHub** RMB rates (converted to
   USD via `fx` so the RMB display is exact). If your DeepSeek/GLM traffic also
-  goes through TokenHub, tell the skill which SKU (standard vs 原厂直供, peak vs
-  idle) so those rates can be aligned — they differ from the direct list rates.
+   goes through TokenHub, tell the skill which SKU (standard vs first-party/
+   direct-supply, peak vs idle) so those rates can be aligned — they differ from
+   the direct list rates.
 - **Cost is computed from the real input / output / cache-read split**, not a
   blended per-token rate. Daily cost (chart panel) and per-session cost both use
   each day's/session's exact split, so the large price gap between cached
