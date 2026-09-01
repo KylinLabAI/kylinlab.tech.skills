@@ -14,7 +14,6 @@ Usage:
   python3 cross_platform_report.py [--days 30] [--start 2026-07-13] [--end 2026-08-11]
 """
 import argparse
-import csv
 import glob
 import os
 import sys
@@ -43,6 +42,11 @@ UNIT = {
 }
 
 
+def _accounts_with_data(platform):
+    """Accounts holding data for a platform; [None] = default store."""
+    return data_store.list_accounts(platform) or [None]
+
+
 def main():
     ap = argparse.ArgumentParser(description="Cross-platform usage summary.")
     ap.add_argument("--days", type=int, default=30)
@@ -60,89 +64,86 @@ def main():
     else:
         start = end - dt.timedelta(days=args.days)
 
-    plat_verify = {}   # platform -> (errors, warnings)
+    plat_verify = {}   # (platform, account) -> (errors, warnings)
     stats = {}
-    for p in PLATS:
-        files = glob.glob(f"{data_store.platform_data_dir(p)}/*.csv")
-        cost = 0.0
-        n = free = paid = 0
-        models = defaultdict(float)
-        wdates = defaultdict(float)
-        for f in files:
-            with open(f, encoding="utf-8") as fh:
-                for row in csv.DictReader(fh):
-                    if not row.get("date"):
-                        continue
-                    d = dt.datetime.strptime(row["date"], "%Y-%m-%d").date()
-                    c = float(row.get("cost") or 0)
-                    cost += c
-                    n += 1
-                    if c == 0:
-                        free += 1
-                    else:
-                        paid += 1
-                    models[row.get("model", "?")] += c
-                    if start <= d <= end:
-                        wdates[row["date"]] += c
-        # highest-uid report dir for the link
-        rep_dirs = sorted(glob.glob(
-            os.path.join(data_store.platform_report_dir(p), "*_*")))
-        link = rep_dirs[-1].replace(ROOT, "..") if rep_dirs else f"{p}/"
-        stats[p] = dict(n=n, cost=round(cost, 2), free=free, paid=paid,
-                        models=dict(sorted(models.items(), key=lambda x: -x[1])[:5]),
-                        wdays=len(wdates), link=link)
-        # run verify gate (best-effort, do not abort the whole summary)
-        try:
-            errs, warns, _ = verify_data.verify(p, start, end)
-            plat_verify[p] = (errs, warns)
-        except Exception as e:
-            plat_verify[p] = ([], [f"verify 失败: {e}"])
-
-    # combined daily cost across all platforms (align by date)
-    all_dates = set()
-    for p in PLATS:
-        for f in glob.glob(f"{data_store.platform_data_dir(p)}/*.csv"):
-            with open(f, encoding="utf-8") as fh:
-                for row in csv.DictReader(fh):
-                    if row.get("date"):
-                        all_dates.add(row["date"])
+    cols = []          # one column per (platform, account)
     combined = defaultdict(lambda: defaultdict(float))
+    all_dates = set()
+
     for p in PLATS:
-        for f in glob.glob(f"{data_store.platform_data_dir(p)}/*.csv"):
-            with open(f, encoding="utf-8") as fh:
-                for row in csv.DictReader(fh):
-                    if not row.get("date"):
-                        continue
-                    combined[row["date"]][p] += float(row.get("cost") or 0)
+        for acc in _accounts_with_data(p):
+            key = (p, acc)
+            cols.append(key)
+            # load_consolidated (not a raw CSV scan) so the numbers here match
+            # the per-platform reports, including dedup.
+            rows = data_store.load_consolidated(p, start, end, acc)
+            cost = 0.0
+            n = free = paid = 0
+            models = defaultdict(float)
+            wdates = defaultdict(float)
+            for r in rows:
+                d_str = r.get("date") or ""
+                if not d_str:
+                    continue
+                c = float(r.get("cost") or 0)
+                cost += c
+                n += 1
+                if c == 0:
+                    free += 1
+                else:
+                    paid += 1
+                models[r.get("model", "?")] += c
+                wdates[d_str] += c
+                all_dates.add(d_str)
+                combined[d_str][key] += c
+            # highest report dir for the link, scoped to this account
+            rep_dirs = sorted(glob.glob(
+                os.path.join(data_store.platform_report_dir(p, acc), "*_*")))
+            link = rep_dirs[-1].replace(ROOT, "..") if rep_dirs else f"{p}/"
+            stats[key] = dict(n=n, cost=round(cost, 2), free=free, paid=paid,
+                              models=dict(sorted(models.items(),
+                                                 key=lambda x: -x[1])[:5]),
+                              wdays=len(wdates), link=link)
+            # run verify gate (best-effort, do not abort the whole summary)
+            try:
+                errs, warns, _ = verify_data.verify(p, start, end, acc)
+                plat_verify[key] = (errs, warns)
+            except Exception as e:
+                plat_verify[key] = ([], [f"verify 失败: {e}"])
 
     # ---- build HTML ----
+    def _col(key):
+        """Human label for a (platform, account) column."""
+        p, acc = key
+        return LABEL[p] if not acc else f"{LABEL[p]} · {acc}"
+
     rows_cmp = "".join(
-        f"<tr><td>{LABEL[p]}</td><td>{stats[p]['n']}</td>"
-        f"<td>{stats[p]['paid']}</td><td>{stats[p]['free']}</td>"
-        f"<td>{stats[p]['cost']} {UNIT[p]}</td>"
-        f"<td>{stats[p]['wdays']}</td>"
-        f"<td>{', '.join(f'{k} ({round(v,1)})' for k,v in stats[p]['models'].items())}</td>"
-        f"<td><a href='{stats[p]['link']}/report.html' target='_blank'>打开报告</a></td></tr>"
-        for p in PLATS
+        f"<tr><td>{_col(k)}</td><td>{stats[k]['n']}</td>"
+        f"<td>{stats[k]['paid']}</td><td>{stats[k]['free']}</td>"
+        f"<td>{stats[k]['cost']} {UNIT[k[0]]}</td>"
+        f"<td>{stats[k]['wdays']}</td>"
+        f"<td>{', '.join(f'{m} ({round(v,1)})' for m,v in stats[k]['models'].items())}</td>"
+        f"<td><a href='{stats[k]['link']}/report.html' target='_blank'>打开报告</a></td></tr>"
+        for k in cols
     )
 
     verify_notes = "".join(
-        f"<li><b>{LABEL[p]}</b>: "
-        + ("✅ 校验通过" if not any(plat_verify[p])
-           else "; ".join("⚠ " + w for w in plat_verify[p][1])
-           + ("; " + "; ".join("❌ " + e for e in plat_verify[p][0]) if plat_verify[p][0] else ""))
+        f"<li><b>{_col(k)}</b>: "
+        + ("✅ 校验通过" if not any(plat_verify[k])
+           else "; ".join("⚠ " + w for w in plat_verify[k][1])
+           + ("; " + "; ".join("❌ " + e for e in plat_verify[k][0]) if plat_verify[k][0] else ""))
         + "</li>"
-        for p in PLATS
+        for k in cols
     )
 
     sd = sorted(all_dates)
-    daily_rows = "".join(
-        "<tr><td>%s</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td></tr>"
-        % (d,
-           combined[d].get("qoder", 0), combined[d].get("trae", 0),
-           combined[d].get("codebuddy", 0), combined[d].get("deepseek", 0))
-        for d in sd if start <= dt.datetime.strptime(d, "%Y-%m-%d").date() <= end
-    )
+    daily_head = "".join(f"<th>{_col(k)}</th>" for k in cols)
+    daily_rows = ""
+    for d in sd:
+        if not (start <= dt.datetime.strptime(d, "%Y-%m-%d").date() <= end):
+            continue
+        tds = "".join(f"<td>{round(combined[d].get(k, 0), 2)}</td>" for k in cols)
+        daily_rows += f"<tr><td>{d}</td>{tds}</tr>"
 
     html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <style>body{{font-family:-apple-system,'PingFang SC',sans-serif;margin:24px;color:#222}}
@@ -162,12 +163,12 @@ Qoder/DeepSeek 为美元/额度，TRAE/CodeBuddy 为积分(points)。
 <ul>{verify_notes}</ul>
 若有 ❌，请先用 <code>scrape_usage.py --platform &lt;p&gt; --start {start} --end {end}</code>
 补齐后再重新生成本报告。</div>
-<h2>平台对比</h2>
-<table><tr><th>平台</th><th>总请求</th><th>付费</th><th>免费</th><th>总费用(单位见各列)</th><th>窗口内活跃天数</th><th>Top 模型（费用）</th><th>独立报告</th></tr>
+<h2>平台 / 账号对比</h2>
+<table><tr><th>平台 · 账号</th><th>总请求</th><th>付费</th><th>免费</th><th>总费用(单位见各列)</th><th>窗口内活跃天数</th><th>Top 模型（费用）</th><th>独立报告</th></tr>
 {rows_cmp}
 </table>
-<h2>每日费用趋势（按平台，单位各自独立）</h2>
-<table><tr><th>日期</th><th>Qoder</th><th>TRAE</th><th>CodeBuddy</th><th>DeepSeek</th></tr>
+<h2>每日费用趋势（按平台 · 账号，单位各自独立）</h2>
+<table><tr><th>日期</th>{daily_head}</tr>
 {daily_rows}
 </table>
 </body></html>"""

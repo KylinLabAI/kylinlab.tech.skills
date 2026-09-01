@@ -45,16 +45,22 @@ def _d(s):
         return None
 
 
-def verify(platform, req_start=None, req_end=None):
-    files = data_store.list_data_files(platform)
+def verify(platform, req_start=None, req_end=None, account=None):
+    """Check one platform ACCOUNT for completeness.
+
+    Scoped to a single account: mixing accounts would hide a missing day in
+    one account behind the other account's data.
+    """
+    label = platform if not account else f"{platform}/{account}"
+    files = data_store.list_data_files(platform, account)
     errors, warnings = [], []
-    export_based = normalize.has_export_raw(platform)
+    export_based = normalize.has_export_raw(platform, account)
 
     if not files:
-        errors.append(f"无缓存数据：data/{platform}/ 下没有任何 CSV。")
+        errors.append(f"无缓存数据：{label} 下没有任何 CSV。")
         return errors, warnings, []
 
-    rows = data_store.load_consolidated(platform, req_start, req_end)
+    rows = data_store.load_consolidated(platform, req_start, req_end, account)
     if not rows:
         errors.append("合并后无任何记录。")
         return errors, warnings, rows
@@ -117,8 +123,20 @@ def verify(platform, req_start=None, req_end=None):
         "codebuddy": "积分/额度", "deepseek": "美元",
     }.get(platform.lower(), "未知")
     source_note = "(export)" if export_based else "(scraped)"
-    print(f"[verify] {platform}: {len(rows)} 条 {source_note}, "
+    print(f"[verify] {label}: {len(rows)} 条 {source_note}, "
           f"覆盖 {min(have)}~{max(have)}, 单位={cost_unit}")
+    return errors, warnings, rows
+
+
+def verify_all_accounts(platform, req_start=None, req_end=None):
+    """Verify every account of a platform; returns (errors, warnings, rows)."""
+    errors, warnings, rows = [], [], []
+    for acc in data_store.list_accounts(platform):
+        label = acc or "default"
+        e, w, r = verify(platform, req_start, req_end, acc)
+        errors.extend(f"[{label}] {x}" for x in e)
+        warnings.extend(f"[{label}] {x}" for x in w)
+        rows.extend(r)
     return errors, warnings, rows
 
 
@@ -147,7 +165,12 @@ def main():
     ap.add_argument("--platform", required=True)
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
-    ap.add_argument("--all", action="store_true")
+    ap.add_argument("--account", default=None,
+                    help="account to verify (default: the unnamed default store)")
+    ap.add_argument("--all-accounts", action="store_true",
+                    help="verify every account of this platform")
+    ap.add_argument("--all", action="store_true",
+                    help="use the full cached date range")
     args = ap.parse_args()
 
     req_start = req_end = None
@@ -156,13 +179,18 @@ def main():
     if args.end:
         req_end = datetime.strptime(args.end, DATE_FMT).date()
     if args.all or (req_start is None and req_end is None):
-        files = data_store.list_data_files(args.platform)
+        files = data_store.list_data_files(args.platform, args.account)
         if files:
             req_start = min(s for s, _e, _p in files)
             req_end = max(e for _s, e, _p in files)
 
-    errors, warnings, _ = verify(args.platform, req_start, req_end)
-    sys.exit(_print_and_exit(args.platform, errors, warnings))
+    if args.all_accounts:
+        errors, warnings, _ = verify_all_accounts(args.platform, req_start, req_end)
+        label = f"{args.platform} (all accounts)"
+    else:
+        errors, warnings, _ = verify(args.platform, req_start, req_end, args.account)
+        label = args.platform if not args.account else f"{args.platform}/{args.account}"
+    sys.exit(_print_and_exit(label, errors, warnings))
 
 
 if __name__ == "__main__":

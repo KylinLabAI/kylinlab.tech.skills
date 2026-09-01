@@ -86,9 +86,27 @@ def plot_task(task_counter, out_dir):
     return save(fig, out_dir, "task_type.png")
 
 
+def render_account_breakdown(by_account):
+    """HTML table comparing accounts on one platform (only when >1 account)."""
+    if not by_account or len(by_account) < 2:
+        return ""
+    rows = sorted(by_account.items(), key=lambda kv: -kv[1]["cost"])
+    body = "".join(
+        f"<tr><td>{name}</td><td>{v['n']}</td><td>{v['free']}</td>"
+        f"<td>{v['n'] - v['free']}</td><td>{round(v['cost'], 2)}</td>"
+        f"<td>{len(v['days'])}</td></tr>"
+        for name, v in rows)
+    return (f"<h2>账号分布</h2>"
+            f"<table><tr><th>账号</th><th>总请求</th><th>免费</th><th>付费</th>"
+            f"<th>费用</th><th>活跃天数</th></tr>{body}</table>"
+            f"<p class=\"note\">同平台多账号的费用单位一致，可以相加；"
+            f"跨平台的费用单位不同，不可相加。</p>")
+
+
 def render_html(platform, total, free, paid, total_cost,
                 day_labels, day_n, day_free, day_paid, day_cost,
-                model_counter, model_cost, task_counter):
+                model_counter, model_cost, task_counter,
+                by_account=None):
     day_rows = "".join(
         f"<tr><td>{l}</td><td>{n}</td><td>{f}</td><td>{p}</td><td>{c}</td></tr>"
         for l, n, f, p, c in zip(day_labels, day_n, day_free, day_paid, day_cost))
@@ -118,6 +136,7 @@ img{{max-width:100%;margin:12px 0;border:1px solid #eee;border-radius:8px}}
 </div>
 <div class="note">说明：表中仅含单一费用列（无折扣信息）时，打折前 = 打折后 = 费用。
 「免费」指费用=0 的请求；「付费」指费用&gt;0 的请求。无单次耗时字段时省略请求时间相关图表。</div>
+{render_account_breakdown(by_account)}
 <h2>日期趋势</h2>
 <img src="daily_count.png"><img src="daily_cost.png">
 <table><tr><th>日期</th><th>总次数</th><th>免费</th><th>付费</th><th>费用</th></tr>{day_rows}</table>

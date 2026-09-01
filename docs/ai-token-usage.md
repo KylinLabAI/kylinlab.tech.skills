@@ -109,12 +109,25 @@ per-1M-token price, read from the saved table **`skills/ai-token-usage/reference
 - All four parsers route token fields through the shared `unify_tokens` helper
   so cache handling is consistent; cache reads are priced at the cheaper
   cache-read rate.
-- **Free-tier models are counted at their paid base rate by default.** A model
-  whose name contains `free` (e.g. `deepseek-v4-flash-free`) is priced using
-  its non-free base model's rates (`deepseek-v4-flash`), so a free promotion
-  still contributes real cost to the usage assessment. Tokens for free models
-  are always counted regardless. Use `--exclude-free` to zero free-tier models
+- **Free-tier models are priced at their own model's rate, not at $0.** A model
+  whose name carries a `free` token (e.g. `deepseek-v4-flash-free`,
+  `hy3-free`, `mimo-v2.5-free`) is priced using the same model without that
+  token (`deepseek-v4-flash`, `hy3`, `mimo-v2.5`), so a free promotion still
+  contributes real cost to the usage assessment. Tokens for free models are
+  always counted regardless. Use `--exclude-free` to zero free-tier models
   (price them at $0) for a billable-only "final cost" view.
+  A model that is *explicitly* free in `pricing.json` (e.g. `glm-4.7-flash`,
+  `input: 0`) keeps its $0 rate — that is its real list price. To count it at a
+  paid sibling's rate instead, add `"priced_as": "<key>"` to its entry.
+- **Unknown models fall back to the `auto` rates instead of being skipped.**
+  A model with no entry and no substring match in `references/pricing.json` is
+  priced with the table's `fallback` entry (`auto` by default: USD 0.44 / 1.32 /
+  0.014 per 1M input / output / cache-read, i.e. deepseek-v4-flash rates), so
+  its usage is never silently valued at $0. This includes sessions where the
+  parser could not detect the model name (shown as `unknown`).
+  Models priced this way are named at the end of the terminal output and in
+  `report.md`'s notes; change the rate by editing the `auto` entry, or point
+  `fallback` at a different key in `references/pricing.json`.
 - Some models are priced from a **reseller** rather than the original vendor:
   `hy3` and `mimo-v2.5` use **Tencent Cloud TokenHub** RMB rates (converted to
   USD via `fx` so the RMB display is exact). If your DeepSeek/GLM traffic also

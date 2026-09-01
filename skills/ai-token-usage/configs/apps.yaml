@@ -23,3 +23,16 @@ apps:
     install_windows: "winget install -e --id Python.Python.3.12"
     install_linux_apt: "sudo apt-get update && sudo apt-get install -y python3 python3-pip"
     install_linux_dnf: "sudo dnf install -y python3 python3-pip"
+
+  # Optional but recommended: renders the report's chart.png trend panel.
+  - name: "matplotlib"
+    description: "Python charting library used to render the report's PNG trend charts (chart.png). Without it the report still runs; only the image is skipped."
+    profiles: ["ai-token-usage"]
+    category: "python-package"
+    platforms: [macos, windows, linux]
+    check_shell: "python3 -c \"import matplotlib\""
+    check_windows_shell: "python -c \"import matplotlib\""
+    install_macos: "python3 -m pip install matplotlib"
+    install_windows: "python -m pip install matplotlib"
+    install_linux_apt: "python3 -m pip install matplotlib"
+    install_linux_dnf: "python3 -m pip install matplotlib"

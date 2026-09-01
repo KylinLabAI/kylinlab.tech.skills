@@ -194,8 +194,10 @@ Layout (the date is the generation date, `YYYY-MM-DD`):
   3. Daily **sessions**,
   4. Daily **turns**,
   5. **Model usage share** pie.
-  Generated with matplotlib; if matplotlib is unavailable, the PNG is skipped
-  and the markdown notes the absence.
+  Generated with matplotlib; `matplotlib` is declared in
+  `configs/apps.yaml` (profile `ai-token-usage`), so `scripts/init.py` installs
+  it. If it is still unavailable, the PNG is skipped and the markdown notes the
+  absence.
 - **`raw/report-data.json`** — the complete aggregated payload (daily,
   per-session, per-model, per-agent, `per_agent_model`, `daily_agent_model`,
   costs, tool availability) so you can run your own analyses or rebuild a
@@ -250,8 +252,23 @@ best-effort fetched live and falling back to an embedded default.
   the shared `unify_tokens` helper so all clients count cache identically.
   Cache reads are tracked **separately** so they are priced at the cheaper
   cache-read rate instead of the standard input rate.
-- `scripts/pricing.py` matches each model name (case-insensitive; `*free*`
-  models and unknown models cost $0 / are skipped) and returns an estimate.
+- `scripts/pricing.py` matches each model name (case-insensitive) against the
+  saved table and returns an estimate. Resolution order:
+  1. exact key in `references/pricing.json`;
+  2. name contains a `free` token -> the same model without that token
+     (`hy3-free` -> `hy3`, `deepseek-v4-flash-free` -> `deepseek-v4-flash`);
+     a free model is therefore priced at its own model's rate, never at $0;
+  3. longest substring match (`z-ai/glm-5.2` -> `glm-5.2`);
+  4. **unknown model** -> the table's `fallback` entry (`auto` by default:
+     USD 0.44 / 1.32 / 0.014 per 1M input / output / cache-read). Unknown
+     usage is never silently valued at $0. Models priced this way are listed
+     at the end of the terminal output and in `report.md`'s notes.
+- A model that is explicitly free in the table (e.g. `glm-4.7-flash`,
+  `input: 0`) keeps its $0 rate — that is its real list price. To count such a
+  model at a paid sibling's rate, add `"priced_as": "<key>"` to its entry in
+  `references/pricing.json` (e.g. `"priced_as": "glm-4.7-flashx"`).
+- Point `fallback` at another key in `references/pricing.json` to change the
+  rate used for unknown models.
 - Default is `--currency CNY` (RMB); use `--currency USD` for US dollars.
 
 ```bash
@@ -261,7 +278,9 @@ python3 scripts/ai_token_usage.py --days 30 --format json --agent opencode
 
 Cost is an **estimate**: providers bill cached tokens cheaper, and the saved
 table's `input` rate is the standard (non-cached) list rate. Treat it as a
-close approximation, not an invoice.
+close approximation, not an invoice. Models that are not in the price table
+are estimated at the `auto` fallback rates, so they contribute to the total
+instead of being dropped.
 
 ## Other AI Coding Tools — Token UsageOpenCode token usage **is** tracked locally via its SQLite database. The other
 VS Code-derived IDEs do not persist token counts in local files; this skill

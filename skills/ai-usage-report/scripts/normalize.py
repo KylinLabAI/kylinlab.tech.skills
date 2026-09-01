@@ -5,8 +5,12 @@ schema used by build_report.py, while KEEPING the originals untouched.
 
 Design
 ------
-  data/<platform>/raw/      <- drop the original export files here
-  data/<platform>/          <- generated normalized CSVs live here
+  data/<platform>/raw/                  <- default account exports
+  data/<platform>/accounts/<acc>/raw/   <- per-account exports
+  data/<platform>/[accounts/<acc>/]     <- generated normalized CSVs live here
+
+Each account gets its own raw/ folder so exports from different accounts on the
+same platform can never overwrite each other.
 
 Supported exports
   - CodeBuddy: request-usage-YYYY-MM-DD.xlsx
@@ -38,15 +42,15 @@ import data_store  # noqa: E402
 DATE_FMT = "%Y-%m-%d"
 
 
-def _raw_dir(platform):
-    d = os.path.join(data_store.platform_data_dir(platform), "raw")
+def _raw_dir(platform, account=None):
+    d = os.path.join(data_store.platform_data_dir(platform, account), "raw")
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def has_export_raw(platform):
-    """Return True if this platform has official export files in raw/."""
-    raw_dir = _raw_dir(platform)
+def has_export_raw(platform, account=None):
+    """Return True if this platform account has official export files in raw/."""
+    raw_dir = _raw_dir(platform, account)
     if not os.path.isdir(raw_dir):
         return False
     for fn in os.listdir(raw_dir):
@@ -71,7 +75,7 @@ def _parse_dt(s):
     return None
 
 
-def normalize_codebuddy(xlsx_path, out_dir):
+def normalize_codebuddy(xlsx_path, out_dir, account=None):
     """Convert CodeBuddy export xlsx to normalized CSV."""
     wb = openpyxl.load_workbook(xlsx_path, read_only=True)
     ws = wb.active
@@ -92,8 +96,12 @@ def normalize_codebuddy(xlsx_path, out_dir):
             "free": 1 if float(cost or 0) == 0 else 0,
             "prompt": str(prompt or "").strip(),
             "platform": "codebuddy",
+            "account": data_store.safe_account(account),
             "requests": 1,
-            "raw_request_id": str(rid or ""),
+            # `request_id` (not raw_request_id) is what the store dedups on:
+            # without it, two requests with the same day/model/cost collapse
+            # into one and the report under-counts.
+            "request_id": str(rid or ""),
             "raw_client": str(client or ""),
         })
     if rows:
@@ -102,11 +110,11 @@ def normalize_codebuddy(xlsx_path, out_dir):
     else:
         base = os.path.splitext(os.path.basename(xlsx_path))[0]
     out = os.path.join(out_dir, f"{base}.csv")
-    _write(rows, out)
-    return out, len(rows)
+    n = _write(rows, out)
+    return out, n
 
 
-def normalize_deepseek(zip_path, out_dir):
+def normalize_deepseek(zip_path, out_dir, account=None):
     """Convert DeepSeek export zip to normalized CSV(s)."""
     tmp = os.path.join(out_dir, ".tmp_unzip")
     os.makedirs(tmp, exist_ok=True)
@@ -130,6 +138,7 @@ def normalize_deepseek(zip_path, out_dir):
                         "free": 1 if float(row.get("cost", 0) or 0) == 0 else 0,
                         "prompt": "",
                         "platform": "deepseek",
+                        "account": data_store.safe_account(account),
                         "requests": 1,
                         "raw_wallet_type": row.get("wallet_type", ""),
                         "raw_currency": row.get("currency", ""),
@@ -141,43 +150,91 @@ def normalize_deepseek(zip_path, out_dir):
             else:
                 out_name = cf
             out = os.path.join(out_dir, out_name)
-            _write(rows, out)
-            written.append((out, len(rows)))
+            n = _write(rows, out)
+            written.append((out, n))
         return written
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _migrate_row(r):
+    """Backfill fields that older normalized CSVs stored under other names.
+
+    Exports used to write `raw_request_id`; the store dedups on `request_id`,
+    so old rows had an empty identity id and collapsed against each other.
+    """
+    if not str(r.get("request_id") or "") and str(r.get("raw_request_id") or ""):
+        r["request_id"] = str(r.get("raw_request_id"))
+    if r.get("account") is None:
+        r["account"] = ""
+    return r
+
+
+def _dedup_rows(rows):
+    """Collapse rows that share a store identity, keeping the best copy."""
+    best, order = {}, []
+    for r in rows:
+        key = data_store._dedup_key(r)
+        if key in best:
+            if not data_store._more_complete(r, best[key]):
+                continue
+        else:
+            order.append(key)
+        best[key] = r
+    return [best[k] for k in order]
+
+
 def _write(rows, path):
+    """Write normalized rows, MERGING with whatever is already in `path`.
+
+    Overwriting would silently drop data: two exports that cover the same date
+    window (e.g. two accounts, or a re-export) map to the same file name.
+    """
     if not rows:
         return
+    existing = []
+    if os.path.exists(path):
+        existing = [_migrate_row(r) for r in data_store._read_rows(path)]
+    merged = _dedup_rows([_migrate_row(r) for r in rows] + existing)
+    merged.sort(key=lambda r: (r.get("date", ""), str(r.get("model", ""))))
     fieldnames = list(data_store.FIELDS) + sorted(
-        {k for r in rows for k in r if k not in data_store.FIELDS}
+        {k for r in merged for k in r if k not in data_store.FIELDS}
     )
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
-        w.writerows(rows)
+        w.writerows(merged)
+    return len(merged)
 
 
-def normalize_all(platform=None):
-    """Scan raw/ folders and regenerate normalized CSVs."""
+def normalize_all(platform=None, account=None):
+    """Scan raw/ folders (default account + every named account) and
+    regenerate normalized CSVs."""
     results = []
     targets = [platform] if platform else ["codebuddy", "deepseek"]
     for p in targets:
-        raw = _raw_dir(p)
-        out_dir = data_store.platform_data_dir(p)
-        if p == "codebuddy":
-            for fn in sorted(os.listdir(raw)):
-                if fn.lower().endswith(".xlsx"):
-                    out, n = normalize_codebuddy(os.path.join(raw, fn), out_dir)
-                    results.append((p, fn, out, n))
-        elif p == "deepseek":
-            for fn in sorted(os.listdir(raw)):
-                if fn.lower().endswith(".zip"):
-                    written = normalize_deepseek(os.path.join(raw, fn), out_dir)
-                    for out, n in written:
-                        results.append((p, fn, out, n))
+        accounts = [account] if account else [None] + data_store.list_account_dirs(p)
+        for acc in accounts:
+            results.extend(_normalize_account(p, acc))
+    return results
+
+
+def _normalize_account(platform, account):
+    """Normalize every export file in one account's raw/ folder."""
+    results = []
+    raw = _raw_dir(platform, account)
+    out_dir = data_store.platform_data_dir(platform, account)
+    if not os.path.isdir(raw):
+        return results
+    label = platform if not account else f"{platform}/{account}"
+    for fn in sorted(os.listdir(raw)):
+        src = os.path.join(raw, fn)
+        if platform == "codebuddy" and fn.lower().endswith(".xlsx"):
+            out, n = normalize_codebuddy(src, out_dir, account)
+            results.append((label, fn, out, n))
+        elif platform == "deepseek" and fn.lower().endswith(".zip"):
+            for out, n in normalize_deepseek(src, out_dir, account):
+                results.append((label, fn, out, n))
     return results
 
 
@@ -187,10 +244,13 @@ def main():
     ap = argparse.ArgumentParser(description="Normalize exported platform usage files.")
     ap.add_argument("--platform", choices=["codebuddy", "deepseek"],
                     help="Only normalize one platform")
+    ap.add_argument("--account", default=None,
+                    help="Only normalize this account (default: every account)")
     args = ap.parse_args()
-    results = normalize_all(args.platform)
+    results = normalize_all(args.platform, args.account)
     if not results:
-        print("[normalize] no raw export files found in data/<platform>/raw/")
+        print("[normalize] no raw export files found in "
+              "data/<platform>/raw/ (nor in data/<platform>/accounts/<acc>/raw/)")
         return
     for p, src, out, n in results:
         print(f"[normalize] {p}: {src} -> {out} ({n} rows)")

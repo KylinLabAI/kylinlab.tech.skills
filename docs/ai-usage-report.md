@@ -46,13 +46,29 @@ Captured data is cached under a single root (env `AI_USAGE_ROOT`, default
 
 ```
 ~/Desktop/ai-usage-report/
-├── data/<platform>/<start>_<end>.csv     # raw captures, one file per window
-└── report/<platform>/<start>_<end>/       # report.html + charts
+├── data/<platform>/
+│   ├── <start>_<end>.csv                 # default (unnamed) account
+│   └── accounts/<account>/               # one self-contained folder per account
+│       └── <start>_<end>.csv
+└── report/<platform>/
+    ├── <start>_<end>/                     # default account report
+    └── accounts/<account>/<start>_<end>/  # per-account report
+        └── _all/<start>_<end>/            # aggregate report (all accounts)
 ```
 
+The default (unnamed) account lives at `data/<platform>/`, so data captured
+**before** multi-account support still works.
+
 This enables **reuse** (skip fetch if range is cached), **incremental fetch**
-(only fetch missing days, dedupe by `date+model+cost+prompt`), and **merge**
-across partial fetches.
+(only fetch missing days, dedupe by
+`account+date+model+cost-bucket+free+request_id`), **merge** across partial
+fetches, and **isolation** (each account is a separate store — three CodeBuddy
+accounts never overwrite or silently merge into each other).
+
+> The dedup key deliberately excludes `prompt`: platforms reformat the prompt
+> preview between pulls (e.g. adding a `[client]` prefix), so including it
+> would break dedup and double-count re-fetched days. It does include
+> `account`, so rows from different accounts never collapse together.
 
 ## Supported Inputs
 
@@ -64,37 +80,54 @@ across partial fetches.
 
 ## How To Use
 
-Install dependencies once, in the scripts directory:
+### Initialization
+
+This skill needs extra tools beyond Python 3: the `openpyxl`, `matplotlib`, and
+`playwright` packages, plus the Playwright Chromium build (only required for
+browser capture). Run the one-time init:
 
 ```bash
-cd skills/ai-usage-report/scripts
-pip install --break-system-packages openpyxl matplotlib
+python3 skills/ai-usage-report/scripts/init.py          # install
+python3 skills/ai-usage-report/scripts/init.py --check  # status only
 ```
 
-The skill ships four scripts:
+Normal reporting runs should execute the task scripts directly — do not
+preflight-check dependencies. If something is missing at runtime, re-run the
+init above instead of installing ad hoc.
+
+The skill ships five scripts:
 
 1. **`scrape_usage.py`** — open the platform site in a real browser, sign in,
    auto/manually page through, and write captured records to a normalized CSV
-   under `data/<platform>/`.
+   under `data/<platform>/` (or `data/<platform>/accounts/<label>/` when
+   `--account <label>` is given). A separate persistent Chrome profile is used
+   per account.
 2. **`verify_data.py`** — check the cached capture for completeness (empty
    files, missing dates, duplicates, density anomalies). Non-zero exit means data
    is incomplete. **Always run this after a scrape** — missing >50% of days
-   aborts report generation.
+   aborts report generation. Use `--account <label>` or `--all-accounts`.
 3. **`build_report.py`** — merge CSVs into matplotlib charts + an HTML report
-   under `report/<platform>/<start>_<end>/`. It runs the verify gate first and
-   aborts on failure (use `--force` to override, with care).
+   under `report/<platform>/<start>_<end>/` (or per-account / `_all/` when
+   `--account` is given). It runs the verify gate first and aborts on failure
+   (use `--force` to override, with care).
 4. **`cross_platform_report.py`** — combine all platforms into one overview HTML,
    embedding each platform's verify result and noting that cost units are not
    comparable across platforms.
+5. **`init.py`** — one-time setup that installs Python 3 and the Python
+   dependencies (plus the Playwright Chromium build) via `laptop-setup`.
+
+(The shared helpers `analyze_usage.py`, `charts.py`, `data_store.py`, and
+`normalize.py` are imported by the scripts above rather than run directly —
+except for the one-shot `analyze_usage.py <file>` flow shown below.)
 
 Guided example (Qoder, ~30 days):
 
 ```bash
-# 1) Scrape (set --headless False for interactive login)
+# 1) Scrape (omit --headless for interactive login; --headless is a flag with
+#    no value, so drop it rather than passing "False")
 python3 scrape_usage.py --platform qoder \
   --url "https://qoder.com.cn/account/usage" \
-  --out ~/Desktop/ai-usage-report/data/qoder/2026-07-13_2026-08-11.csv \
-  --start-date 2026-07-13 --end-date 2026-08-11 --headless False
+  --start 2026-07-13 --end 2026-08-11
 
 # 2) Verify (build_report also verifies, but run standalone for clarity)
 python3 verify_data.py --platform qoder --start 2026-07-13 --end 2026-08-11
@@ -105,6 +138,33 @@ python3 build_report.py --platform qoder --start 2026-07-13 --end 2026-08-11
 # 4) Cross-platform overview
 python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
 ```
+
+### Multiple accounts on one platform
+
+If you own several logins on the same platform (e.g. 3 CodeBuddy accounts), pass
+`--account <label>` everywhere. Each account is stored under
+`data/<platform>/accounts/<label>/` with its own raw exports, captures, coverage
+gaps and report — so they never overwrite or merge. The capture uses a separate
+persistent Chrome profile per account (one login each).
+
+```bash
+# Capture each account into its own store
+python3 scrape_usage.py --platform codebuddy --account work \
+  --url https://www.codebuddy.cn/profile/plans-usage --start 2026-08-01 --end 2026-08-31
+python3 scrape_usage.py --platform codebuddy --account personal \
+  --url https://www.codebuddy.cn/profile/plans-usage --start 2026-08-01 --end 2026-08-31
+
+# Report one account, or aggregate all accounts (with a per-account breakdown)
+python3 build_report.py --platform codebuddy --account work --start 2026-08-01 --end 2026-08-31
+python3 build_report.py --platform codebuddy --account all --start 2026-08-01 --end 2026-08-31
+
+# Verify one account, or every account
+python3 verify_data.py --platform codebuddy --account personal --start 2026-08-01 --end 2026-08-31
+python3 verify_data.py --platform codebuddy --all-accounts --start 2026-08-01 --end 2026-08-31
+```
+
+With no `--account`, scripts operate on the default (unnamed) store;
+`build_report.py` additionally prints a hint listing any other accounts it found.
 
 One-shot from a single export file (no scrape needed):
 
@@ -160,6 +220,10 @@ Flags:
 - `--out DIR`: output folder (default `~/Desktop/<input>_report` for one-shot;
   `~/Desktop/ai-usage-report/report/<platform>/<s>_<e>/` for store).
 - `--auto-fetch`: fill missing date gaps via the scraper before building.
+- `--account <label>`: scope every operation to one account
+  (`scrape_usage.py` / `verify_data.py` / `build_report.py`). Use `all` with
+  `build_report.py` to aggregate every account into one report with a per-account
+  breakdown. `verify_data.py` uses `--all-accounts` to check every account.
 
 ## Output
 
@@ -186,7 +250,8 @@ User: "Use ai-usage-report to generate a ~30-day usage analysis for qoder/codebu
 Add a `parse_<platform>(path)` function in `analyze_usage.py`, or a keyword in
 `PLATFORM_KEYWORDS` in `scrape_usage.py`. For `--auto-fetch` URLs, edit
 `configs/urls.json`. Normalized record shape:
-`{date, model, cost, free, prompt, platform}`.
+`{date, model, cost, free, prompt, platform, account, requests}` (`account`
+is part of the dedup identity; default `""` for the unnamed store).
 
 ## Related Skill File
 

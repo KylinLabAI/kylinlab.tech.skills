@@ -11,21 +11,39 @@ Design goals
   We only fetch the *missing* days, then merge overlapping files into a single
   consolidated dataset for reporting. This saves time and API calls.
 
+Multi-account support
+---------------------
+A user may own several accounts on the same platform (e.g. 3 CodeBuddy
+accounts). Accounts MUST stay isolated: mixed together they would be
+indistinguishable, and rows that happen to share (date, model, cost) would be
+collapsed by the dedup logic, silently under-counting usage.
+
+Layout — every account is a self-contained mirror of the platform folder:
+
+    data/<platform>/                     # default account (back-compat)
+    data/<platform>/accounts/<acc>/      # one folder per extra account
+    report/<platform>/                   # default account reports
+    report/<platform>/accounts/<acc>/    # per-account reports
+
+`account=None` (or "") always means the default store, so data captured before
+multi-account support keeps working unchanged.
+
 Normalized record schema (same as the scraper / analyzer):
-    date, model, cost, free, prompt, platform, requests
+    date, model, cost, free, prompt, platform, account, requests
 
 Public API
 ----------
     ROOT                   -> ~/Desktop/ai-usage-report (overridable via env)
-    platform_data_dir(p)   -> .../data/<p>
-    platform_report_dir(p) -> .../report/<p>
-    list_data_files(p)     -> [ (start_date, end_date, path), ... ]
-    covered_dates(p)       -> set(datetime.date) of all dates already captured
-    missing_ranges(req_start, req_end, p)
+    platform_data_dir(p, account=None)   -> .../data/<p>[/accounts/<acc>]
+    platform_report_dir(p, account=None) -> .../report/<p>[/accounts/<acc>]
+    list_accounts(p)       -> [None, "a", ...] accounts that hold CSVs
+    list_data_files(p, account=None)     -> [ (start, end, path), ... ]
+    covered_dates(p, account=None)       -> set(date) already captured
+    missing_ranges(req_start, req_end, p, account=None)
                             -> list[(date,date)] of gaps to fetch
-    merge_and_save(p, records, req_start, req_end)
+    merge_and_save(p, records, req_start, req_end, account=None)
                             -> writes/updates CSVs, returns consolidated path
-    load_consolidated(p, req_start, req_end)
+    load_consolidated(p, req_start, req_end, account=None)
                             -> combined, deduped CSV rows for a requested range
 """
 import csv
@@ -38,9 +56,12 @@ ROOT = os.environ.get(
     "AI_USAGE_ROOT",
     os.path.join(os.path.expanduser("~/Desktop"), "ai-usage-report"),
 )
-FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "requests",
-          "request_id", "row_id"]
+FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "account",
+          "requests", "request_id", "row_id"]
 DATE_FMT = "%Y-%m-%d"
+# Named accounts live under data/<platform>/accounts/<account>/. The default
+# (unnamed) account is the platform folder itself, for backwards compatibility.
+ACCOUNTS_DIRNAME = "accounts"
 # Cost tolerance for dedup: platforms may return the same logical cost with
 # tiny float/currency-conversion differences across re-fetches. Treat anything
 # within this epsilon as the same cost so it dedups instead of double-counting.
@@ -55,25 +76,64 @@ def _d(s):
         return None
 
 
-def platform_data_dir(platform):
+def safe_account(account):
+    """Normalize an account label to a filesystem-safe folder name.
+
+    Returns "" for the default (unnamed) account.
+    """
+    s = (account or "").strip()
+    if not s:
+        return ""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", s).strip("-")
+
+
+def platform_data_dir(platform, account=None):
     d = os.path.join(ROOT, "data", platform.lower())
+    acc = safe_account(account)
+    if acc:
+        d = os.path.join(d, ACCOUNTS_DIRNAME, acc)
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def platform_report_dir(platform):
+def platform_report_dir(platform, account=None):
     d = os.path.join(ROOT, "report", platform.lower())
+    acc = safe_account(account)
+    if acc:
+        d = os.path.join(d, ACCOUNTS_DIRNAME, acc)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def list_account_dirs(platform):
+    """Names of named-account folders that exist on disk (may still be empty)."""
+    root = os.path.join(ROOT, "data", platform.lower(), ACCOUNTS_DIRNAME)
+    if not os.path.isdir(root):
+        return []
+    return sorted(n for n in os.listdir(root)
+                  if os.path.isdir(os.path.join(root, n)))
+
+
+def list_accounts(platform):
+    """Account ids that already hold normalized CSVs.
+
+    `None` stands for the default (unnamed) store and is only returned when it
+    actually has data, so freshly created account folders are skipped.
+    """
+    out = [None] if list_data_files(platform) else []
+    for name in list_account_dirs(platform):
+        if list_data_files(platform, name):
+            out.append(name)
+    return out
 
 
 def _filename_for(start, end):
     return f"{start.strftime(DATE_FMT)}_{end.strftime(DATE_FMT)}.csv"
 
 
-def list_data_files(platform):
+def list_data_files(platform, account=None):
     """Return list of (start_date, end_date, path) sorted by start date."""
-    d = platform_data_dir(platform)
+    d = platform_data_dir(platform, account)
     out = []
     for fn in os.listdir(d):
         m = re.match(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$", fn)
@@ -86,10 +146,14 @@ def list_data_files(platform):
     return out
 
 
-def covered_dates(platform):
-    """Union of all dates present in existing data files for the platform."""
+def covered_dates(platform, account=None):
+    """Union of all dates present in existing data files for the platform.
+
+    Scoped to a single account: coverage from account A must never mask a gap
+    in account B.
+    """
     dates = set()
-    for _s, _e, path in list_data_files(platform):
+    for _s, _e, path in list_data_files(platform, account):
         for row in _read_rows(path):
             dd = _d(row.get("date", ""))
             if dd:
@@ -104,7 +168,7 @@ def _read_rows(path):
         return list(csv.DictReader(f))
 
 
-def last_covered_date(platform):
+def last_covered_date(platform, account=None):
     """Return the latest date that already has cached data, or None.
 
     Used to force a re-fetch of the previous pull's final day, because that
@@ -112,10 +176,10 @@ def last_covered_date(platform):
     partially complete. Re-fetching it and merging (deduped) backfills the
     missing tail without double-counting.
     """
-    files = list_data_files(platform)
+    files = list_data_files(platform, account)
     if files:
         return max(e for _s, e, _p in files)
-    dates = covered_dates(platform)
+    dates = covered_dates(platform, account)
     return max(dates) if dates else None
 
 
@@ -127,6 +191,19 @@ def _canon_cost(r):
         return 0.0
 
 
+def as_bool(v):
+    """Parse the `free` flag, which is a real bool in memory but a string once
+    it has been round-tripped through CSV.
+
+    `bool("False")` is True, so comparing a freshly captured record against a
+    row read from disk used to produce different dedup keys — every re-fetch
+    appended another physical copy of the same row.
+    """
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "y", "t")
+    return bool(v)
+
+
 def _dedup_key(r):
     """Stable identity for a logical usage row.
 
@@ -136,17 +213,21 @@ def _dedup_key(r):
     `[client]` prefix), so it MUST NOT be part of the identity — otherwise a
     re-fetch would fail to dedup and double-count (the original bug).
 
-    Identity = (date, model, cost-bucket, free). `cost-bucket` is rounded to 4
-    dp; same-day-same-model rows whose costs are within COST_EPS are treated as
-    the same logical line at merge time (see `_cost_same`). The most-complete
-    prompt is kept as a representative copy via `_more_complete`, but it does
-    not affect identity.
+    Identity = (account, date, model, cost-bucket, free, request_id).
+    `cost-bucket` is rounded to 4 dp; same-day-same-model rows whose costs are
+    within COST_EPS are treated as the same logical line at merge time (see
+    `_cost_same`). The most-complete prompt is kept as a representative copy
+    via `_more_complete`, but it does not affect identity.
+
+    `account` is part of the identity so two accounts on the same platform can
+    never collapse into one row.
     """
     return (
+        str(r.get("account", "") or ""),
         r.get("date", ""),
         str(r.get("model", "") or ""),
         round(_canon_cost(r), 4),
-        bool(r.get("free", False)),
+        as_bool(r.get("free", False)),
         str(r.get("request_id", "") or ""),
     )
 
@@ -159,18 +240,21 @@ def _cost_same(a, b):
 def _row_id(r):
     """Stable, content-derived id for a row (persisted to CSV for idempotency).
 
-    Based on the same identity as `_dedup_key` (date, model, cost-bucket, free)
-    plus the platform, so identical logical rows always collide and genuinely
-    different rows never do. Prompt is intentionally excluded (see _dedup_key).
+    Based on the same identity as `_dedup_key` (account, date, model,
+    cost-bucket, free) plus the platform, so identical logical rows always
+    collide and genuinely different rows never do. Prompt is intentionally
+    excluded (see _dedup_key).
     """
     h = hashlib.sha1()
+    h.update(str(r.get("account", "") or "").encode("utf-8", "replace"))
+    h.update(b"|")
     h.update(str(r.get("date", "")).encode("utf-8", "replace"))
     h.update(b"|")
     h.update(str(r.get("model", "")).encode("utf-8", "replace"))
     h.update(b"|")
     h.update(("%.4f" % round(_canon_cost(r), 4)).encode("utf-8"))
     h.update(b"|")
-    h.update(str(r.get("free", False)).encode("utf-8"))
+    h.update(("1" if as_bool(r.get("free", False)) else "0").encode("utf-8"))
     h.update(b"|")
     h.update(str(r.get("platform", "")).encode("utf-8"))
     h.update(b"|")
@@ -199,17 +283,18 @@ def _same_key(r, key):
     return _dedup_key(r) == key
 
 
-def missing_ranges(req_start, req_end, platform, force_days=None):
+def missing_ranges(req_start, req_end, platform, account=None, force_days=None):
     """Compute the date gaps that still need to be fetched.
 
     req_start / req_end : datetime.date
+    account             : scope the check to this account (None = default)
     force_days           : optional iterable of datetime.date that must be
                            re-fetched even if already covered (e.g. the
                            previous pull's final day, which may be partial).
     Returns a list of (gap_start, gap_end) tuples, possibly empty.
     Gaps are maximal contiguous missing intervals within [req_start, req_end].
     """
-    have = covered_dates(platform)
+    have = covered_dates(platform, account)
     force = set(force_days or [])
     missing = []
     cur_start = None
@@ -230,12 +315,22 @@ def missing_ranges(req_start, req_end, platform, force_days=None):
     return missing
 
 
-def load_consolidated(platform, req_start=None, req_end=None):
-    """Return combined, deduped record dicts for a platform (optionally clipped
-    to a requested range)."""
+def load_consolidated(platform, req_start=None, req_end=None, account=None):
+    """Return combined, deduped record dicts for one platform account
+    (optionally clipped to a requested range).
+
+    Rows read from disk get their `account` field backfilled, so CSVs written
+    before multi-account support can be merged with newer ones safely.
+    """
     rows = []
-    for _s, _e, path in list_data_files(platform):
+    for _s, _e, path in list_data_files(platform, account):
         rows.extend(_read_rows(path))
+    # Backfill legacy rows: exports used to store `raw_request_id` while the
+    # dedup identity uses `request_id`, so old rows had an empty id and would
+    # collapse together. Copy it over so they merge correctly.
+    for r in rows:
+        if not str(r.get("request_id") or "") and str(r.get("raw_request_id") or ""):
+            r["request_id"] = str(r.get("raw_request_id"))
     # Stable dedup by _dedup_key. We keep the most-complete copy on conflict
     # (non-empty prompt wins; otherwise higher cost wins) so re-fetching a
     # partially-captured day backfills the tail without double-counting.
@@ -252,19 +347,27 @@ def load_consolidated(platform, req_start=None, req_end=None):
             best[key] = r
     uniq = list(best.values())
     uniq.sort(key=lambda r: (r.get("date", ""), str(r.get("model", ""))))
+    acc = safe_account(account)
+    for r in uniq:
+        if not str(r.get("account", "") or ""):
+            r["account"] = acc
     return uniq
 
 
-def merge_and_save(platform, new_records, req_start, req_end):
+def merge_and_save(platform, new_records, req_start, req_end, account=None):
     """Merge freshly captured `new_records` into the store and persist.
 
     Strategy:
     - Append new rows into the file whose range already covers [req_start,
       req_end] if one exists; otherwise create a new dated file.
     - Dedup against all existing rows to avoid double-counting overlaps.
+    - Scope everything to one account, so accounts never overwrite each other.
     Returns the path of the file that was written/updated.
     """
-    existing = list_data_files(platform)
+    acc = safe_account(account)
+    for r in new_records:
+        r["account"] = acc
+    existing = list_data_files(platform, acc or None)
     # pick a target file: prefer one that already spans the requested range
     target = None
     for s, e, path in existing:
@@ -273,7 +376,7 @@ def merge_and_save(platform, new_records, req_start, req_end):
             break
     if target is None:
         # create a new file named after the requested range
-        path = os.path.join(platform_data_dir(platform),
+        path = os.path.join(platform_data_dir(platform, acc or None),
                             _filename_for(req_start, req_end))
         target = (req_start, req_end, path)
 
@@ -283,11 +386,15 @@ def merge_and_save(platform, new_records, req_start, req_end):
     # its cost is within epsilon of the existing cost (i.e. the same logical
     # row re-fetched). Near-cost matches that differ beyond epsilon are kept
     # (treated as genuinely distinct activity on the same day/model).
-    existing_rows = load_consolidated(platform)
+    existing_rows = load_consolidated(platform, account=acc or None)
     have_keys = {_dedup_key(r) for r in existing_rows}
     have_cost = {_dedup_key(r): r for r in existing_rows}
     old_rows = _read_rows(path)
     merged = list(old_rows)
+    for r in merged:
+        # Rows already in the account file must carry the account tag, even if
+        # they were written before the account column existed.
+        r["account"] = acc
     added = 0
     for r in new_records:
         key = _dedup_key(r)

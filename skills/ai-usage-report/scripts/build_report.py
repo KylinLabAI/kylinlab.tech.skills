@@ -9,10 +9,17 @@ data_store.py), merges them, and runs the full analysis pipeline
 If a date range is requested and some days are missing, it can auto-trigger
 scrape_usage.py to fill the gaps first (incremental fetch).
 
+Multi-account: a platform can hold several accounts, each with its own folder
+(data/<platform>/accounts/<account>/). Pick one with `--account <name>`, or
+pass `--account all` to aggregate every account into a single report (with a
+per-account breakdown table).
+
 Usage:
     python3 build_report.py --platform qoder [--start 2026-08-01] [--end 2026-08-15]
     python3 build_report.py --platform codebuddy --all        # whole cache
     python3 build_report.py --platform deepseek --auto-fetch   # fill gaps then report
+    python3 build_report.py --platform codebuddy --account work
+    python3 build_report.py --platform codebuddy --account all
 """
 import argparse
 import importlib.util
@@ -48,7 +55,7 @@ def _coerce(rows):
         except (ValueError, TypeError):
             r["cost"] = 0.0
         try:
-            r["free"] = bool(int(float(r.get("free") or 0)))
+            r["free"] = data_store.as_bool(r.get("free"))
         except (ValueError, TypeError):
             r["free"] = (r["cost"] == 0.0)
         try:
@@ -59,38 +66,55 @@ def _coerce(rows):
     return out
 
 
-def _load_consolidated_rows(platform, req_start, req_end):
+ALL_ACCOUNTS = "all"
+
+
+def _load_consolidated_rows(platform, req_start, req_end, account=None):
     """Return merged, deduped, type-coerced record dicts from the data store."""
-    return _coerce(data_store.load_consolidated(platform, req_start, req_end))
+    return _coerce(data_store.load_consolidated(platform, req_start, req_end,
+                                                account=account))
 
 
-def _auto_fetch(platform, req_start, req_end, no_backfill=False):
-    """Trigger scrape_usage.py for missing gaps only.
+def _load_all_accounts(platform, req_start, req_end):
+    """Rows from every account, each tagged with its account name."""
+    rows = []
+    for acc in data_store.list_accounts(platform):
+        rows.extend(_load_consolidated_rows(platform, req_start, req_end, acc))
+    return rows
+
+
+def _auto_fetch(platform, req_start, req_end, no_backfill=False, account=None):
+    """Trigger scrape_usage.py for missing gaps only (per account).
 
     By default the previous pull's final day is force re-fetched (backfilled),
     because it may have been captured mid-day and is only partially complete.
     """
+    label = platform if not account else f"{platform}/{account}"
     force = set()
     if not no_backfill:
-        prev_last = data_store.last_covered_date(platform)
+        prev_last = data_store.last_covered_date(platform, account)
         if prev_last is not None:
             force.add(prev_last)
-    gaps = data_store.missing_ranges(req_start, req_end, platform, force_days=force)
+    gaps = data_store.missing_ranges(req_start, req_end, platform,
+                                     account=account, force_days=force)
     if not gaps:
-        print(f"[build] range {req_start}~{req_end} already cached, skip fetch.")
+        print(f"[build] {label}: range {req_start}~{req_end} already cached, skip fetch.")
         return
-    print(f"[build] missing gaps: {gaps}; fetching via scraper...")
+    print(f"[build] {label}: missing gaps {gaps}; fetching via scraper...")
     g0, g1 = gaps[0][0], gaps[-1][1]
     url = _platform_url(platform)
     if not url:
         print(f"[build] no URL configured for {platform}; skipping auto-fetch.")
         return
-    subprocess.run([
+    cmd = [
         sys.executable, os.path.join(HERE, "scrape_usage.py"),
         "--platform", platform, "--url", url,
         "--start", g0.strftime("%Y-%m-%d"),
         "--end", g1.strftime("%Y-%m-%d"),
-    ], check=True)
+    ]
+    if account:
+        cmd += ["--account", account]
+    subprocess.run(cmd, check=True)
 
 
 def _platform_url(platform):
@@ -116,11 +140,21 @@ def main():
     ap.add_argument("--no-backfill", action="store_true",
                     help="do not force re-fetch of the previous pull's final day "
                          "(set only if you are certain that day is complete)")
+    ap.add_argument("--account", default=None,
+                    help="account to report on; use 'all' to aggregate every "
+                         "account of this platform")
     args = ap.parse_args()
 
-    files = data_store.list_data_files(args.platform)
+    platform = args.platform
+    all_accounts = str(args.account or "").lower() == ALL_ACCOUNTS
+    account = None if all_accounts else args.account
+
+    files = data_store.list_data_files(platform, account)
+    if all_accounts:
+        files = files or [f for acc in data_store.list_accounts(platform)
+                          for f in data_store.list_data_files(platform, acc)]
     if not files:
-        print(f"[build] no cached data for {args.platform}. "
+        print(f"[build] no cached data for {platform}. "
               f"Run scrape_usage.py first or use --auto-fetch.")
         if not args.auto_fetch:
             return
@@ -142,21 +176,33 @@ def main():
             req_end = max(e for _s, e, _p in files)
 
     if args.auto_fetch and req_start and req_end:
-        _auto_fetch(args.platform, req_start, req_end, no_backfill=args.no_backfill)
+        accounts = data_store.list_accounts(platform) if all_accounts else [account]
+        for acc in accounts:
+            _auto_fetch(platform, req_start, req_end,
+                        no_backfill=args.no_backfill, account=acc)
 
     # If the platform has exported raw files, re-normalize them first so the
     # report is always based on the latest official export.
-    if normalize.has_export_raw(args.platform):
+    if all_accounts:
+        print("[build] normalizing exports for every account...")
+        normalize.normalize_all(platform)
+    elif normalize.has_export_raw(platform, account):
         print("[build] detected official export files; normalizing first...")
-        normalize.normalize_all(args.platform)
+        normalize.normalize_all(platform, account)
 
-    rows = _load_consolidated_rows(args.platform, req_start, req_end)
+    if all_accounts:
+        rows = _load_all_accounts(platform, req_start, req_end)
+    else:
+        rows = _load_consolidated_rows(platform, req_start, req_end, account)
     if not rows:
         print("[build] no rows after merge; nothing to report.")
         return
 
     # Integrity gate: refuse to publish a report on obviously incomplete data.
-    errors, warnings, _ = verify.verify(args.platform, req_start, req_end)
+    if all_accounts:
+        errors, warnings, _ = verify.verify_all_accounts(platform, req_start, req_end)
+    else:
+        errors, warnings, _ = verify.verify(platform, req_start, req_end, account)
     if errors:
         print("\n[build] ❌ 数据校验未通过，已中止生成报告，避免产出错误结论。")
         print("        请先用 scrape_usage.py 补齐缺失范围，再重新 build。")
@@ -170,21 +216,33 @@ def main():
     unit = {
         "qoder": "美元/额度", "trae": "积分(points)",
         "codebuddy": "积分/额度", "deepseek": "美元",
-    }.get(args.platform.lower(), "未知")
-    print(f"[build] 平台 {args.platform} 费用单位：{unit}"
+    }.get(platform.lower(), "未知")
+    label = platform if not account else (
+        f"{platform} (all accounts)" if all_accounts else f"{platform}/{account}")
+    print(f"[build] 平台 {label} 费用单位：{unit}"
           f"（不同平台单位不可直接相加）")
 
-    # build the report under report/<platform>/<start>_<end>
+    # build the report under report/<platform>[/accounts/<acc>]/<start>_<end>
     s = req_start or min(datetime.strptime(r["date"], "%Y-%m-%d").date()
                          for r in rows if r.get("date"))
     e = req_end or max(datetime.strptime(r["date"], "%Y-%m-%d").date()
                        for r in rows if r.get("date"))
-    out_dir = os.path.join(data_store.platform_report_dir(args.platform),
-                           f"{s.strftime('%Y-%m-%d')}_{e.strftime('%Y-%m-%d')}")
-    summary = analyze.analyze(rows, args.platform, out_dir)
-    print(f"[build] platform={args.platform} range={s}~{e}")
+    if all_accounts:
+        base = os.path.join(data_store.platform_report_dir(platform), "_all")
+    else:
+        base = data_store.platform_report_dir(platform, account)
+    out_dir = os.path.join(base, f"{s.strftime('%Y-%m-%d')}_{e.strftime('%Y-%m-%d')}")
+    summary = analyze.analyze(rows, platform, out_dir)
+    print(f"[build] platform={label} range={s}~{e}")
     print(f"        records={summary['total']} cost={summary['total_cost']}")
     print(f"        report  : {os.path.join(out_dir, 'report.html')}")
+
+    # Help discover multi-account data instead of silently reporting one store.
+    if not args.account:
+        named = [a for a in data_store.list_accounts(platform) if a]
+        if named:
+            print(f"[build] 该平台还有账号：{', '.join(named)}；"
+                  f"单独出报告用 --account <name>，汇总用 --account all。")
 
 
 if __name__ == "__main__":

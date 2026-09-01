@@ -277,6 +277,18 @@ def analyze(records, platform, out_dir):
         model_cost[r["model"]] += r["cost"]
     task_counter = Counter(classify_task(r["prompt"]) for r in records)
 
+    # Per-account rollup. Only rendered when the data actually spans more than
+    # one account (e.g. `build_report.py --account all`).
+    by_account = defaultdict(lambda: {"n": 0, "cost": 0.0, "free": 0, "days": set()})
+    for r in records:
+        a = str(r.get("account") or "default")
+        by_account[a]["n"] += 1
+        by_account[a]["cost"] += r["cost"]
+        if r["free"]:
+            by_account[a]["free"] += 1
+        if r.get("date"):
+            by_account[a]["days"].add(str(r["date"]))
+
     charts.setup_font()
     charts.plot_daily_count(day_labels, day_n, day_paid, day_free, out_dir)
     charts.plot_daily_cost(day_labels, day_cost, out_dir)
@@ -287,7 +299,8 @@ def analyze(records, platform, out_dir):
 
     html = charts.render_html(platform, total, free, paid, total_cost,
                               day_labels, day_n, day_free, day_paid, day_cost,
-                              model_counter, model_cost, task_counter)
+                              model_counter, model_cost, task_counter,
+                              by_account=by_account if len(by_account) > 1 else None)
     with open(os.path.join(out_dir, "report.html"), "w", encoding="utf-8") as f:
         f.write(html)
     return {

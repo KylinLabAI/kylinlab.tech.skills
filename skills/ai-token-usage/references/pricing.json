@@ -1,5 +1,6 @@
 {
   "currency": "USD",
+  "fallback": "auto",
   "fetched": "2026-08-27",
   "fx": {
     "USD_CNY": 6.737,
@@ -11,7 +12,7 @@
     "auto": {
       "cache_read": 0.014,
       "input": 0.44,
-      "note": "Router 'Auto' model; defaults to deepseek-v4-flash rates. Edit to match your assumed model.",
+      "note": "Router 'Auto' model, and the fallback used to price any model that is not in this table (unknown model names, and *free* names whose base model is unknown). Defaults to deepseek-v4-flash rates (USD 0.44 / 1.32 / 0.014 per 1M input/output/cache-read). Edit 'fallback' to point at another key, or edit these rates to match your assumed model.",
       "output": 1.32,
       "source": "placeholder"
     },
@@ -103,6 +104,7 @@
       "free": true,
       "input": 0.0,
       "output": 0.0,
+      "priced_as": "glm-4.5-air",
       "source": "zhipu_glm"
     },
     "glm-4.5-x": {
@@ -128,6 +130,7 @@
       "free": true,
       "input": 0.0,
       "output": 0.0,
+      "priced_as": "glm-4.7-flashx",
       "source": "zhipu_glm"
     },
     "glm-4.7-flashx": {

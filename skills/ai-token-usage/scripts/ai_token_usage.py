@@ -245,6 +245,15 @@ def analyze_current_session(session_path: Path) -> CurrentSessionUsage:
 def main() -> int:
     args = parse_args()
 
+    # Force UTF-8 output streams. On Windows the default console encoding (e.g.
+    # gbk) cannot encode symbols such as the cost "¥", which otherwise crashes
+    # any piped/redirected run. Safe no-op when already UTF-8.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass
+
     # --- Current session mode ---
     if args.current_session:
         if args.session_file:
@@ -424,6 +433,12 @@ def main() -> int:
     _pricing.set_currency(args.currency)
     _pricing.set_exclude_free(args.exclude_free)
 
+    # Resolve every model up-front so models priced at the fallback ("auto")
+    # rates are known before any renderer runs — they are annotated in the
+    # terminal output and in report.md's notes for every output format.
+    for _m in per_model:
+        _pricing.lookup(_m)
+
     notes = availability_notes()
 
     if args.format == "table":
@@ -443,6 +458,13 @@ def main() -> int:
             f"{total_scanned} usage records, {total_counted} in range."
         )
         print_availability_notes(notes)
+        fb = _pricing.fallback_models()
+        if fb:
+            print()
+            print(
+                f"Priced at fallback '{_pricing.FALLBACK_KEY}' rates "
+                f"(model not in pricing.json): {', '.join(fb)}"
+            )
     elif args.format == "csv":
         print_csv(daily, dates)
     elif args.format == "json":
@@ -468,6 +490,12 @@ def main() -> int:
             f"{n['agent']}: not available locally ({n['detail']} See {n['dashboard']} for usage.)"
             for n in notes if n["available"] == "no"
         ]
+        fb_models = _pricing.fallback_models()
+        if fb_models:
+            notes_list.append(
+                f"Models not in pricing.json were priced at the fallback "
+                f"'{_pricing.FALLBACK_KEY}' rates: {', '.join(fb_models)}."
+            )
 
         # --- Root (all agents) report + chart ---
         root_md = date_dir / "report.md"

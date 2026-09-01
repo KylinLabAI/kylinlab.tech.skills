@@ -25,6 +25,17 @@ If a browser capture misses >50% of the requested days, the report is aborted
 unless `--force` is given. This prevents the silent data-loss bug that
 affected Qoder captures before Aug 2026.
 
+## Initialization Contract
+
+If the user asks to initialize, set up, or install tools for this skill, run
+`python <skill>/scripts/init.py` (installs Python 3, `openpyxl`/`matplotlib`/
+`playwright`, and the Playwright Chromium build via `laptop-setup`).
+
+For normal reporting requests, do not preflight-check dependencies. Run the
+scripts directly. If a dependency is missing at runtime, stop and ask the user
+to initialize the skill first with `python <skill>/scripts/init.py` — do not
+install ad hoc.
+
 ## Persistent data store (incremental + reuse)
 
 All captured data lives under a single root (override with env `AI_USAGE_ROOT`,
@@ -33,21 +44,34 @@ default **`~/Desktop/ai-usage-report`**):
 ```
 ~/Desktop/ai-usage-report/
 ├── data/<platform>/
-│   ├── raw/                              # original exports (.xlsx / .zip / .csv)
-│   └── <start>_<end>.csv                 # normalized captures, one file per window
-└── report/<platform>/<start>_<end>/       # generated reports (report.html + charts)
+│   ├── raw/                              # default account exports (.xlsx/.zip/.csv)
+│   ├── <start>_<end>.csv                 # default account normalized captures
+│   └── accounts/<account>/              # ONE self-contained folder per account
+│       ├── raw/                          # that account's exports
+│       └── <start>_<end>.csv             # that account's normalized captures
+└── report/<platform>/
+    ├── <start>_<end>/                     # default account report
+    ├── accounts/<account>/<start>_<end>/  # per-account report
+    └── _all/<start>_<end>/                # aggregate report (every account)
 ```
 
-Each raw file is named after the date range it covers
+The default (unnamed) account is the platform folder itself, so data captured
+**before** multi-account support keeps working unchanged.
+
+Each capture file is named after the date range it covers
 (e.g. `data/qoder/2026-08-01_2026-08-15.csv`). This lets the skill:
 
 - **Reuse**: if a user later asks for a range already fully cached, no fetch
   happens — `build_report.py` just reads the CSVs.
 - **Incremental fetch**: if the requested range only partially overlaps cached
   data, the scraper fetches *only the missing days* and re-merges (dedup by
-  `date+model+cost+prompt`). Overlapping days are not double-counted.
-- **Merge**: `data_store.load_consolidated()`/ `merge_and_save()` dedupe across
+  `account+date+model+cost-bucket+free+request_id`). Overlapping days are not
+  double-counted.
+- **Merge**: `data_store.load_consolidated()` / `merge_and_save()` dedupe across
   files so multiple partial fetches combine into one clean dataset.
+- **Isolation**: every account is a fully separate store — its raw exports,
+  captures, coverage gaps, and report never touch another account, so three
+  CodeBuddy accounts never overwrite or silently merge into each other.
 
 ```bash
 # First fetch (writes data/qoder/2026-08-01_2026-08-15.csv)
@@ -63,16 +87,58 @@ python3 build_report.py --platform qoder --start 2026-07-15 --end 2026-08-15
 python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-31 --auto-fetch
 ```
 
-`data_store.py` API: `covered_dates(p)`, `missing_ranges(start,end,p)`,
-`merge_and_save(p,records,start,end)`, `load_consolidated(p,start,end)`.
+`data_store.py` API:
+`covered_dates(p, account)`, `missing_ranges(start,end,p,account)`,
+`merge_and_save(p,records,start,end,account)`,
+`load_consolidated(p,start,end,account)`, `list_accounts(p)`.
+
+## Multi-account (one platform, several accounts)
+
+When a user owns **several accounts on the same platform** (e.g. 3 CodeBuddy
+logins), the accounts must stay isolated — mixing them would make rows from
+different accounts indistinguishable, and the dedup logic would collapse
+same-day/same-model rows into one, silently under-counting usage.
+
+Each account gets its own mirror of the platform folder
+(`data/<platform>/accounts/<account>/` + `report/<platform>/accounts/<account>/`),
+and `account` is part of the dedup identity, so accounts never overwrite or
+merge into each other. The default (unnamed) store stays at `data/<platform>/`
+for backwards compatibility.
+
+- **Capture** — pass `--account <label>` to `scrape_usage.py`. It uses a separate
+  persistent Chrome profile per account (one login session per profile), so you
+  are never forced to log out of one account to scrape another.
+- **Normalize** — exports go in the matching `accounts/<account>/raw/` folder.
+  `normalize.py` (no args) normalizes **every** account; `normalize.py --account
+  <label>` restricts to one.
+- **Verify** — `verify_data.py --account <label>`, or `--all-accounts` to check
+  every account of a platform.
+- **Report** — `build_report.py --account <label>` for one account, or
+  `--account all` to aggregate **all** accounts into
+  `report/<platform>/_all/<s>_<e>/` with a per-account breakdown table. With no
+  `--account`, `build_report.py` reports the default store and prints a hint
+  listing any other accounts it found.
+- **Cross-platform summary** — `cross_platform_report.py` lists each
+  (platform, account) as its own column, so multi-account data is never hidden
+  behind another account's rows.
+
+```bash
+# Capture each account into its own store
+python3 scrape_usage.py --platform codebuddy --account work  --url <url> --start 2026-08-01 --end 2026-08-31
+python3 scrape_usage.py --platform codebuddy --account personal --url <url> --start 2026-08-01 --end 2026-08-31
+
+# Report them separately, or aggregate
+python3 build_report.py --platform codebuddy --account work --start 2026-08-01 --end 2026-08-31
+python3 build_report.py --platform codebuddy --account all --start 2026-08-01 --end 2026-08-31
+```
 
 ## Unified data flow
 
 ```
-Platform web portal  ──(scrape_usage.py --start/--end)──► data/<p>/<s>_<e>.csv
-CodeBuddy .xlsx  ──► data/<p>/raw/ ──(normalize.py)──► data/<p>/<s>_<e>.csv
-DeepSeek  .zip   ──► data/<p>/raw/ ──(normalize.py)──► data/<p>/<s>_<e>.csv
-data/<p>/*.csv   ──(build_report.py)──► report/<p>/<s>_<e>/report.html
+Platform web portal  ──(scrape_usage.py --start/--end [--account A])──► data/<p>/accounts/<A>/<s>_<e>.csv
+CodeBuddy .xlsx  ──► data/<p>/accounts/<A>/raw/ ──(normalize.py)──► data/<p>/accounts/<A>/<s>_<e>.csv
+DeepSeek  .zip   ──► data/<p>/accounts/<A>/raw/ ──(normalize.py)──► data/<p>/accounts/<A>/<s>_<e>.csv
+data/<p>/.../*.csv ──(build_report.py [--account A|all])──► report/<p>/[accounts/<A>/|_all/]<s>_<e>/report.html
 all platforms    ──(cross_platform_report.py)──► report/_combined/<s>_<e>/summary.html
 ```
 
@@ -82,7 +148,7 @@ all platforms    ──(cross_platform_report.py)──► report/_combined/<s>_
 |------------|--------|-------|
 | CodeBuddy  | `.xlsx` (sheet `Usage Details`) | columns: `RequestID, 积分消耗, User Prompt, 模型, 客户端, 时间` |
 | DeepSeek   | `.zip` (contains `cost-*.csv` + `amount-*.csv`) | daily aggregated cost + token breakdown |
-| Qoder / TRAE / generic | `.csv` / `.xlsx` / `.json` | best-effort column detection; scraper CSV uses `date,model,cost,free,prompt,platform` |
+| Qoder / TRAE / generic | `.csv` / `.xlsx` / `.json` | best-effort column detection; scraper CSV uses `date,model,cost,free,prompt,platform,account` |
 
 ## Browser capture (scrape_usage.py)
 
@@ -90,7 +156,7 @@ Use when a platform has no clean export. The browser handles cookies / JWT /
 anti-bot; we only listen to fetch responses and collect the raw usage records.
 
 ```bash
-pip install playwright && playwright install chromium
+# Prereq (one-time): see Initialization Contract — run init.py, not pip ad hoc
 # Qoder / TRAE (no export) — start/end drive incremental storage:
 python3 scrape_usage.py --platform qoder  --url https://<usage-page> --start 2026-08-01 --end 2026-08-15
 python3 scrape_usage.py --platform trae  --url https://<usage-page> --start 2026-08-01 --end 2026-08-15
@@ -107,9 +173,10 @@ Per-platform API keyword hints (override with `--keyword`):
 | CodeBuddy web | `usage` |
 | DeepSeek web | `usage/by_api_key` |
 
-> Tip: run `headless=False` (default) to avoid bot detection; solve any captcha
-> manually after the login step. Qoder's date range is selected in the UI
-> (custom range if `--start`/`--end` given, else "最近30天" preset).
+> Tip: `--headless` is a flag (default = headful). Omit it to avoid bot
+> detection and solve any captcha manually after the login step. Qoder's date
+> range is selected in the UI (custom range if `--start`/`--end` given, else
+> "最近30天" preset).
 
 ## Auto-download via direct API (no manual export)
 
@@ -161,8 +228,9 @@ existing behavior is preserved.
 
 ```bash
 cd <skill_dir>/scripts
-pip install openpyxl matplotlib playwright
-python3 -m playwright install chromium
+
+# 0) One-time setup (only if dependencies are missing):
+python3 <skill_dir>/scripts/init.py
 
 # 1) Drop official exports into the raw/ folder, then normalize:
 cp request-usage-2026-08-12.xlsx  ~/Desktop/ai-usage-report/data/codebuddy/raw/
@@ -178,6 +246,9 @@ python3 scrape_usage.py --platform trae --url <trae-usage-url> \
 # 3) Verify, then build per-platform reports:
 python3 verify_data.py --platform codebuddy --start 2026-07-13 --end 2026-08-11
 python3 build_report.py --platform codebuddy --start 2026-07-13 --end 2026-08-11
+#    Multi-account: scope by --account, or aggregate with --account all
+python3 build_report.py --platform codebuddy --account work --start 2026-07-13 --end 2026-08-11
+python3 build_report.py --platform codebuddy --account all --start 2026-07-13 --end 2026-08-11
 
 # 4) Cross-platform summary (units are NOT additive):
 python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
@@ -214,7 +285,9 @@ python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
 
 Add a `parse_<platform>(path)` function in `analyze_usage.py` and register it
 in `detect_and_parse()`. Keep the normalized record shape:
-`{date, model, cost, free, prompt, platform}`.
+`{date, model, cost, free, prompt, platform, account, requests}`
+(`account` is part of the dedup identity; default to `""` for the unnamed
+default store).
 For a new no-export platform, add a keyword to `PLATFORM_KEYWORDS` in
 `scrape_usage.py`. To add a platform URL for `--auto-fetch`, edit
 `configs/urls.json`.

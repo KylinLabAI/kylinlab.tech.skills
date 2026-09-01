@@ -184,8 +184,26 @@ def _coerce_record(rec, platform):
     return {
         "date": dt, "model": str(model), "cost": cost,
         "free": bool(free), "prompt": str(prompt or ""), "platform": platform,
+        # Filled in by capture() once the caller's --account is known.
+        "account": "",
         "request_id": str(rid) if rid else "",
     }
+
+
+def _safe_name(s):
+    """Filesystem-safe fragment for profile dir names."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", (s or "").strip()).strip("-")
+
+
+def _default_profile_dir(platform, account=None):
+    """One persistent Chrome profile per platform ACCOUNT.
+
+    A single profile can only hold one logged-in session, so sharing it across
+    accounts would force a logout/login on every switch.
+    """
+    base = os.path.join(os.path.expanduser("~/Library/Caches"), "ai_usage_profile")
+    acc = _safe_name(account)
+    return f"{base}_{platform.lower()}_{acc}" if acc else base
 
 
 # ---------------------------------------------------------------------------
@@ -454,15 +472,14 @@ def _capture_deepseek_via_api(page, start, end, spec):
 
 
 def discover(platform, usage_url, login_url=None, keyword=None,
-             headless=False, profile_dir=None):
+             headless=False, profile_dir=None, account=None):
     """One-time helper: open the platform, let the user log in and load the
     usage/export page, then capture the underlying REST request so it can be
     replayed directly later (no manual file download)."""
     if sync_playwright is None:
         raise RuntimeError("playwright not installed. Run: pip install playwright")
     kw = keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage")
-    profile_dir = profile_dir or os.path.join(
-        os.path.expanduser("~/Library/Caches"), "ai_usage_profile")
+    profile_dir = profile_dir or _default_profile_dir(platform, account)
     os.makedirs(profile_dir, exist_ok=True)
 
     candidates = []   # real data-API candidates (JSON XHR/fetch, not tracking)
@@ -788,12 +805,11 @@ def _ingest_deepseek(url, payload, state):
 
 def capture(platform, usage_url, login_url=None, keyword=None,
             scroll=20, headless=False, profile_dir=None,
-            start=None, end=None):
+            start=None, end=None, account=None):
     if sync_playwright is None:
         raise RuntimeError("playwright not installed. Run: pip install playwright")
     kw = keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage")
-    profile_dir = profile_dir or os.path.join(
-        os.path.expanduser("~/Library/Caches"), "ai_usage_profile")
+    profile_dir = profile_dir or _default_profile_dir(platform, account)
     os.makedirs(profile_dir, exist_ok=True)
     state = {"collected": [], "start": start, "end": end}
     _fresh_auth = {"value": None}
@@ -928,6 +944,12 @@ def capture(platform, usage_url, login_url=None, keyword=None,
         context.close()
 
     records = state["collected"]
+    # Tag every record with the account we captured it for. Stamp here (once)
+    # rather than in each capture branch, so UI-intercept, direct-API, Qoder,
+    # TRAE and DeepSeek paths all get it.
+    acc = _safe_name(account)
+    for r in records:
+        r["account"] = acc
     warnings = _self_check(platform, records, start, end, kw)
     return records, warnings
 
@@ -1200,6 +1222,9 @@ def main():
     ap = argparse.ArgumentParser(description="Capture AI platform usage via Playwright.")
     ap.add_argument("--platform", required=True, help="qoder / trae / codebuddy / deepseek")
     ap.add_argument("--url", required=True, help="usage page URL")
+    ap.add_argument("--account", default=None,
+                    help="account label when you own several accounts on this "
+                         "platform (stored under data/<platform>/accounts/<acc>/)")
     ap.add_argument("--login-url", default=None, help="login page URL (optional)")
     ap.add_argument("--keyword", default=None, help="override API URL keyword")
     ap.add_argument("--out", default=None, help="output CSV path (overrides data store)")
@@ -1219,7 +1244,7 @@ def main():
 
     if args.discover:
         discover(args.platform, args.url, args.login_url, args.keyword,
-                 args.headless, args.profile_dir)
+                 args.headless, args.profile_dir, args.account)
         return
 
     # Resolve requested date range (used for incremental storage + Qoder UI).
@@ -1242,13 +1267,15 @@ def main():
         # Merging + dedup backfills the missing part without double-counting.
         force = set()
         if not args.no_backfill:
-            prev_last = last_covered_date(args.platform)
+            prev_last = last_covered_date(args.platform, args.account)
             if prev_last is not None:
                 force.add(prev_last)
-        gaps = missing_ranges(req_start, req_end, args.platform, force_days=force)
+        # Coverage is per account: account A's data must not mask account B's gaps.
+        gaps = missing_ranges(req_start, req_end, args.platform,
+                              account=args.account, force_days=force)
         if not gaps:
             print(f"[store] range {req_start}~{req_end} already fully cached; "
-                  f"skip fetching. Use analyze_usage.py to build the report.")
+                  f"skip fetching. Use build_report.py to build the report.")
             return
         print(f"[store] need to fetch gaps: {gaps}")
         # We fetch the union of gaps by setting the widest gap as the capture
@@ -1256,11 +1283,11 @@ def main():
         g0, g1 = gaps[0][0], gaps[-1][1]
         recs, warnings = capture(args.platform, args.url, args.login_url, args.keyword,
                                  args.scroll, args.headless, args.profile_dir,
-                                 start=g0, end=g1)
+                                 start=g0, end=g1, account=args.account)
     else:
         recs, warnings = capture(args.platform, args.url, args.login_url, args.keyword,
                                  args.scroll, args.headless, args.profile_dir,
-                                 start=req_start, end=req_end)
+                                 start=req_start, end=req_end, account=args.account)
 
     if warnings:
         print("\n" + "=" * 60)
@@ -1275,7 +1302,8 @@ def main():
 
     if args.out:
         out = args.out
-        fields = ["date", "model", "cost", "free", "prompt", "platform", "requests"]
+        fields = ["date", "model", "cost", "free", "prompt", "platform",
+                  "account", "requests"]
         with open(out, "w", encoding="utf-8", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
@@ -1290,11 +1318,15 @@ def main():
                   for r in recs if r.get("date")]
             req_start = min(ds) if ds else date.today()
             req_end = max(ds) if ds else date.today()
-        path = merge_and_save(args.platform, recs, req_start, req_end)
+        path = merge_and_save(args.platform, recs, req_start, req_end,
+                              account=args.account)
         print(f"[done] stored {len(recs)} records -> {path}")
-        print(f"        data dir: {platform_data_dir(args.platform)}")
-    print(f"        next: python3 analyze_usage.py --platform {args.platform} "
-          f"--start {req_start} --end {req_end}")
+        print(f"        data dir: {platform_data_dir(args.platform, args.account)}")
+    acc_flag = f" --account {args.account}" if args.account else ""
+    print(f"        next: python3 verify_data.py --platform {args.platform}"
+          f"{acc_flag} --start {req_start} --end {req_end}")
+    print(f"        then: python3 build_report.py --platform {args.platform}"
+          f"{acc_flag} --start {req_start} --end {req_end}")
 
 
 if __name__ == "__main__":

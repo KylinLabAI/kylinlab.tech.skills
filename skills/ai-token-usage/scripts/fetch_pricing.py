@@ -73,11 +73,12 @@ EMBEDDED_PRICING = {
     },
     # Placeholder for unknown router models (e.g. Copilot "Auto"). The client
     # only logs "Auto"; the real model is resolved server-side and unknown.
-    # Defaults to deepseek-v4-flash rates — reconfigure freely if you know the
-    # typical model Auto routes to.
+    # Also the fallback used to price any model missing from this table
+    # (see the "fallback" key). Defaults to deepseek-v4-flash rates —
+    # reconfigure freely if you know the typical model Auto routes to.
     "auto": {"input": 0.44, "cache_read": 0.014, "output": 1.32,
              "source": "placeholder",
-             "note": "Router 'Auto' model; defaults to deepseek-v4-flash rates. Edit to match your assumed model."},
+             "note": "Router 'Auto' model, and the fallback used to price any model that is not in this table (unknown model names, and *free* names whose base model is unknown). Defaults to deepseek-v4-flash rates (USD 0.44 / 1.32 / 0.014 per 1M input/output/cache-read). Edit 'fallback' to point at another key, or edit these rates to match your assumed model."},
     # Z.ai GLM text models — official rates from docs.z.ai/guides/overview/pricing
     # (columns: input | cached input = cache_read | storage free | output, USD / 1M).
     "glm-5.3": {"input": 1.4, "cache_read": 0.26, "output": 4.4, "source": "zhipu_glm"},
@@ -214,6 +215,9 @@ def build(fetched: str) -> dict:
     }
     return {
         "currency": "USD",
+        # Key used by scripts/pricing.py to price models that are not in this
+        # table at all, so unknown usage is never silently valued at $0.
+        "fallback": "auto",
         "fetched": fetched,
         "note": (
             "Rates are per 1,000,000 tokens in USD, using each provider's "
