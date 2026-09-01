@@ -40,6 +40,20 @@ TARGETS: tuple[CleanupTarget, ...] = (
         "Xcode and simulator build/cache artifacts that regenerate.",
     ),
     CleanupTarget(
+        "macos-xcode-device-support",
+        "macos",
+        "developer",
+        ("~/Library/Developer/Xcode/iOS DeviceSupport", "~/Library/Developer/CoreSimulator/Logs"),
+        "Xcode iOS DeviceSupport symbol caches and simulator logs that regenerate on the next device connect or build.",
+    ),
+    CleanupTarget(
+        "macos-xcode-archives",
+        "macos",
+        "developer",
+        ("~/Library/Developer/Xcode/Archives",),
+        "Old Xcode app archives. Deleting removes the ability to re-upload that build; only clean archives past the age threshold.",
+    ),
+    CleanupTarget(
         "macos-package-caches",
         "macos",
         "package-caches",

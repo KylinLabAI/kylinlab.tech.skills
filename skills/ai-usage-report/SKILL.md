@@ -141,15 +141,29 @@ labels or log in blindly. Run the wizard once:
 python3 scrape_usage.py --platform codebuddy --url <usage-page> --setup
 ```
 
-It either reads the `configs/accounts.json` label list or prompts for a count,
-then loops once per account — each in its own persistent Chrome profile —
+The account count is **never asked interactively** — the skill stays
+non-blocking. It is resolved in this order, with a single-account default:
+
+1. `configs/accounts.json` (user-maintained label list, opt-in), if it has
+   labels for this platform;
+2. `--accounts N` passed to `--setup` (non-interactive), if given;
+3. otherwise **1 account** (`auto_1`).
+
+The wizard then loops that many times, so the number of logins equals the
+count you declared. To scrape several accounts, set `accounts.json` or pass
+`--accounts N` — `--setup` will not stop to ask.
+
+We deliberately do **not** auto-detect the count from the installed IDE: on a
+real machine 4 CodeBuddy logins left only 2 local traces (the rest were
+mobile/web or pre-retention), so client-side detection under-counts and would
+silently skip accounts. The user's declaration is the single source of truth.
+
+Then it loops once per account — each in its own persistent Chrome profile —
 asking you to log in **only the first time** and caching that session's cookies.
 Afterwards `--account all` reports every account with no further logins.
 
-> The wizard does NOT scan the installed CodeBuddy / Qoder / TRAE client. Those
-> apps keep their account list in opaque local stores (VS Code-style LevelDB),
-> which are fragile and privacy-sensitive to parse. The count comes from
-> `configs/accounts.json` or a one-question prompt instead.
+> No client-side detection and no interactive prompt. Default is 1 account;
+> declare more via `configs/accounts.json` or `--accounts N`.
 
 ## Unified data flow
 

@@ -126,6 +126,7 @@ def _parse_dt(value):
 def _coerce_record(rec, platform):
     """Map an arbitrary usage-event dict to the normalized schema."""
     p = platform.lower()
+    rid = ""
     if p == "qoder":
         dt_raw = _first(rec, QODER_FIELD_MAP["date"])
         model = _first(rec, QODER_FIELD_MAP["model"], "unknown")
@@ -134,6 +135,11 @@ def _coerce_record(rec, platform):
         kind = _first(rec, QODER_FIELD_MAP["kind"])
         operation = _first(rec, QODER_FIELD_MAP["operation"])
         type_field = kind or operation
+        # Qoder records carry no stable per-request id; fingerprint from the
+        # full timestamp so distinct same-day/same-model/same-cost requests stay
+        # separate (otherwise store dedup collapses them into one).
+        rid = str(rec.get("begin_at") or rec.get("time")
+                  or rec.get("created_at") or rec.get("timestamp") or "")
     elif p == "codebuddy":
         dt_raw = _first(rec, CODEBUDDY_FIELD_MAP["date"])
         model = _first(rec, CODEBUDDY_FIELD_MAP["model"], "unknown")
@@ -163,7 +169,7 @@ def _coerce_record(rec, platform):
 
     # unique request/session id, when the platform provides one (used to keep
     # genuinely distinct requests from being collapsed by the store dedup).
-    rid = (rec.get("requestId") or rec.get("request_id") or rec.get("id")
+    rid = (rid or rec.get("requestId") or rec.get("request_id") or rec.get("id")
            or rec.get("sessionId") or rec.get("session_id") or "")
 
     # numeric coercion
@@ -838,7 +844,7 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                 return
             records = _extract_list(payload)
             if not records and isinstance(payload, dict):
-                print(f"[api] {platform} page {pno}: JSON but no list extracted; "
+                print(f"[api] {platform}: JSON but no list extracted; "
                       f"keys={list(payload.keys())[:8]} sample={str(payload)[:160]}")
             if records:
                 norm = [_coerce_record(r, platform) for r in records]
@@ -1176,40 +1182,60 @@ def _fetch_trae_all_pages(page, state, platform):
             .map(b => (b.innerText||'').trim());
     }""")
     print(f"[trae-pages] found: {page_numbers}")
-    if not page_numbers:
-        print("[trae-pages] no pagination buttons found; keeping SPA-loaded data.")
-        return
+    # TRAE's pagination renders "1 2 3 … 7" with a Chinese "下一页" (next) button
+    # and no per-page buttons for the hidden middle pages (4-6). Walk forward via
+    # the "下一页" button from page 1 — it visits every page. Fall back to clicking
+    # each number button only when no next button exists.
+    def _click_next():
+        return page.evaluate("""() => {
+            const btn = Array.from(document.querySelectorAll('button')).find(b => {
+                const t = (b.innerText || '').trim();
+                const ar = (b.getAttribute('aria-label') || '').toLowerCase();
+                return (b.getAttribute('aria-label')||'').includes('下一页') || /next/i.test(ar) || /^[›»]$/.test(t)
+                    || /pagination.*next/i.test(b.className || '');
+            });
+            if (btn && !btn.disabled) { btn.click(); return true; }
+            return false;
+        }""")
 
-    # Always include page 1 (may already be loaded by SPA).
-    for pno in page_numbers:
-        # de-dupe: re-click page 1 is safe (idempotent); data is deduped by
-        # (date, model) at the end.
-        try:
-            ok = page.evaluate(
-                """(pno) => {
-                    const btn = Array.from(document.querySelectorAll('button'))
-                        .find(b => (b.innerText||'').trim() === pno);
-                    if (btn) { btn.click(); return true; }
-                    return false;
-                }""",
-                pno,
-            )
-            if not ok:
-                continue
-            page.wait_for_timeout(1500)  # let SPA fetch and render
-            print(f"[trae-pages] clicked page {pno}; collected={len(state['collected'])}")
-        except Exception as e:
-            print(f"[trae-pages] click {pno} failed: {e}")
+    if page.evaluate("""() => !!Array.from(document.querySelectorAll('button')).find(b => {
+        const t = (b.innerText || '').trim();
+        const ar = (b.getAttribute('aria-label') || '').toLowerCase();
+        return (b.getAttribute('aria-label')||'').includes('下一页') || /next/i.test(ar) || /^[›»]$/.test(t);
+    })"""):
+        for _ in range(60):
+            if not _click_next():
+                break
+            page.wait_for_timeout(1500)
+        print(f"[trae-pages] walked '下一页'; collected={len(state['collected'])}")
+    else:
+        for pno in page_numbers:
+            try:
+                ok = page.evaluate(
+                    """(pno) => {
+                        const btn = Array.from(document.querySelectorAll('button'))
+                            .find(b => (b.innerText||'').trim() === pno);
+                        if (btn) { btn.click(); return true; }
+                        return false;
+                    }""",
+                    pno,
+                )
+                if ok:
+                    page.wait_for_timeout(1500)
+                    print(f"[trae-pages] clicked page {pno}; collected={len(state['collected'])}")
+            except Exception as e:
+                print(f"[trae-pages] click {pno} failed: {e}")
 
-    # 3) deduplicate by (cost, model, prompt_prefix). Each session in TRAE is
-    # distinct per page, but the same session could theoretically appear
-    # twice across our clicks. We dedupe conservatively only on the most
-    # identifying triple.
+    # Deduplicate. Prefer the platform-provided request_id; only fall back to
+    # the (model, cost, prompt-prefix) triple when no id is available, so
+    # genuinely distinct sessions are never collapsed.
     seen, uniq = set(), []
     for r in state["collected"]:
-        key = (r.get("model", ""),
-               round(float(r.get("cost") or 0), 6),
-               (r.get("prompt", "") or "")[:30])
+        key = (r.get("request_id") or "") or (
+            r.get("model", ""),
+            round(float(r.get("cost") or 0), 6),
+            (r.get("prompt", "") or "")[:30],
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -1221,12 +1247,12 @@ def _fetch_trae_all_pages(page, state, platform):
 # ---------------------------------------------------------------------------
 # Multi-account setup wizard (--setup)
 # ---------------------------------------------------------------------------
-# Why no automatic client-side detection?
-#   CodeBuddy / Qoder / TRAE are VS Code-style Electron apps. Their account
-#   lists live in opaque local stores (e.g. globalStorage/state.vscdb, a
-#   LevelDB) with vendor-specific, undocumented layouts. Parsing those is
-#   fragile and privacy-sensitive, so we deliberately do NOT scrape the
-#   installed client. Instead the wizard gets the count from either:
+# We deliberately do NOT auto-detect the account count from the installed IDE
+# (CodeBuddy / Qoder / TRAE). Their account lists live in opaque local stores
+# with vendor-specific, undocumented layouts, and on a real machine the local
+# trace under-counts the real accounts (e.g. 4 CodeBuddy logins left only 2
+# local traces). So the wizard instead asks the user to declare how many
+# accounts they have:
 #     1) configs/accounts.json  (user-maintained label list, opt-in), or
 #     2) a one-question prompt ("how many accounts?").
 #   Either way the user never invents --account labels or logs in blindly: the
@@ -1242,7 +1268,7 @@ def load_known_accounts(platform):
     """Return the user-maintained account label list for a platform, or [].
 
     Source: configs/accounts.json (opt-in). When empty/missing the setup
-    wizard falls back to prompting for a count.
+    wizard prompts the user for a count.
     """
     try:
         with open(_ACCOUNT_CONFIG, "r", encoding="utf-8") as f:
@@ -1253,36 +1279,35 @@ def load_known_accounts(platform):
     return [str(x) for x in labels] if isinstance(labels, list) else []
 
 
-def _prompt_account_count(platform):
-    """Ask how many accounts to configure; return that many auto labels."""
-    try:
-        raw = input(
-            f"[setup] How many {platform} accounts do you want to configure? "
-        ).strip()
-        n = int(raw)
-    except Exception:
-        n = 1
-    if n < 1:
-        n = 1
-    return [f"auto_{i}" for i in range(1, n + 1)]
-
-
 def setup_accounts(platform, usage_url, login_url=None, keyword=None,
-                   scroll=20, headless=False, start=None, end=None):
-    """Guided multi-account bootstrap.
+                   scroll=20, headless=False, start=None, end=None,
+                   account_count=None):
+    """Guided account bootstrap.
 
     For each account we open a dedicated persistent Chrome profile and let the
     user log in once (manual — the client's token cannot be replayed as a web
     cookie). The session is cached, so later captures for that account reuse it
     automatically and never ask again.
+
+    Account labels are chosen WITHOUT any interactive prompt:
+      - configs/accounts.json (opt-in), if it lists labels for this platform;
+      - else --accounts N (the count the caller passed), if given;
+      - else a single default account (auto_1).
+    The skill never blocks on a question, so it is safe to run non-interactively.
     """
     known = load_known_accounts(platform)
     if known:
         labels = known
         print(f"[setup] Using {len(labels)} account label(s) from "
               f"configs/accounts.json: {labels}")
+    elif account_count and account_count >= 1:
+        labels = [f"auto_{i}" for i in range(1, account_count + 1)]
+        print(f"[setup] Using {len(labels)} account label(s) from "
+              f"--accounts {account_count}: {labels}")
     else:
-        labels = _prompt_account_count(platform)
+        labels = ["auto_1"]
+        print("[setup] Defaulting to 1 account (auto_1). Provide "
+              "configs/accounts.json or --accounts N for more.")
 
     total = len(labels)
     for i, label in enumerate(labels, 1):
@@ -1332,9 +1357,14 @@ def main():
                     help="capture the platform's usage API endpoint for future "
                          "automatic download (one-time setup)")
     ap.add_argument("--setup", action="store_true",
-                    help="guided multi-account bootstrap: configures N accounts "
-                         "(count from configs/accounts.json or a prompt), logging "
-                         "in once per account and caching the session cookies.")
+                    help="guided account bootstrap: configures N accounts "
+                         "(count from configs/accounts.json or --accounts N, "
+                         "default 1; no interactive prompt), logging in once "
+                         "per account and caching the session cookies.")
+    ap.add_argument("--accounts", type=int, default=None,
+                    help="number of accounts to configure with --setup "
+                         "(default 1 when omitted and configs/accounts.json is "
+                         "empty). Non-interactive; never prompts.")
     args = ap.parse_args()
 
     if args.discover:
@@ -1356,7 +1386,8 @@ def main():
             e = date.today()
             s = e - timedelta(days=30)
         setup_accounts(args.platform, args.url, args.login_url, args.keyword,
-                       args.scroll, args.headless, start=s, end=e)
+                       args.scroll, args.headless, start=s, end=e,
+                       account_count=args.accounts)
         return
 
     # Resolve requested date range (used for incremental storage + Qoder UI).

@@ -147,6 +147,28 @@ If you own several logins on the same platform (e.g. 3 CodeBuddy accounts), pass
 gaps and report — so they never overwrite or merge. The capture uses a separate
 persistent Chrome profile per account (one login each).
 
+The account count is declared, not auto-detected, and never asked interactively.
+`--setup` resolves it without blocking:
+
+1. `configs/accounts.json` (opt-in) when it lists labels for the platform;
+2. `--accounts N` passed to `--setup`, if given;
+3. otherwise a single default account (`auto_1`).
+
+```bash
+# Pre-declare labels (opt-in):
+#   echo '{"codebuddy": ["work","personal"]}' > configs/accounts.json
+# Or pass the count non-interactively:
+python3 scrape_usage.py --platform codebuddy --url <usage> --setup --accounts 4
+```
+
+`scrape_usage.py --setup` does not scan the installed IDE. It picks labels
+from `configs/accounts.json` or `--accounts N`, otherwise defaults to 1, then
+opens one Chrome window per account for a one-time manual login (an IDE token
+cannot be replayed as a web cookie), caching each session for later runs. We
+don't auto-detect because a client's local trace under-counts the real
+accounts (e.g. 4 CodeBuddy logins left only 2 local traces), so detection
+would silently skip accounts the user actually owns.
+
 ```bash
 # Capture each account into its own store
 python3 scrape_usage.py --platform codebuddy --account work \
