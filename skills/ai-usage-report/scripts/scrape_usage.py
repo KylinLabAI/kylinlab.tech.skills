@@ -1218,6 +1218,97 @@ def _fetch_trae_all_pages(page, state, platform):
     print(f"[trae-pages] final unique rows: {len(state['collected'])}")
 
 
+# ---------------------------------------------------------------------------
+# Multi-account setup wizard (--setup)
+# ---------------------------------------------------------------------------
+# Why no automatic client-side detection?
+#   CodeBuddy / Qoder / TRAE are VS Code-style Electron apps. Their account
+#   lists live in opaque local stores (e.g. globalStorage/state.vscdb, a
+#   LevelDB) with vendor-specific, undocumented layouts. Parsing those is
+#   fragile and privacy-sensitive, so we deliberately do NOT scrape the
+#   installed client. Instead the wizard gets the count from either:
+#     1) configs/accounts.json  (user-maintained label list, opt-in), or
+#     2) a one-question prompt ("how many accounts?").
+#   Either way the user never invents --account labels or logs in blindly: the
+#   wizard loops N times, each in its own persistent profile, asking for a
+#   manual login only the first time, then caches that session's cookies.
+_ACCOUNT_CONFIG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "configs", "accounts.json",
+)
+
+
+def load_known_accounts(platform):
+    """Return the user-maintained account label list for a platform, or [].
+
+    Source: configs/accounts.json (opt-in). When empty/missing the setup
+    wizard falls back to prompting for a count.
+    """
+    try:
+        with open(_ACCOUNT_CONFIG, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    labels = data.get(platform.lower(), [])
+    return [str(x) for x in labels] if isinstance(labels, list) else []
+
+
+def _prompt_account_count(platform):
+    """Ask how many accounts to configure; return that many auto labels."""
+    try:
+        raw = input(
+            f"[setup] How many {platform} accounts do you want to configure? "
+        ).strip()
+        n = int(raw)
+    except Exception:
+        n = 1
+    if n < 1:
+        n = 1
+    return [f"auto_{i}" for i in range(1, n + 1)]
+
+
+def setup_accounts(platform, usage_url, login_url=None, keyword=None,
+                   scroll=20, headless=False, start=None, end=None):
+    """Guided multi-account bootstrap.
+
+    For each account we open a dedicated persistent Chrome profile and let the
+    user log in once (manual — the client's token cannot be replayed as a web
+    cookie). The session is cached, so later captures for that account reuse it
+    automatically and never ask again.
+    """
+    known = load_known_accounts(platform)
+    if known:
+        labels = known
+        print(f"[setup] Using {len(labels)} account label(s) from "
+              f"configs/accounts.json: {labels}")
+    else:
+        labels = _prompt_account_count(platform)
+
+    total = len(labels)
+    for i, label in enumerate(labels, 1):
+        prof = _default_profile_dir(platform, label)
+        print(f"\n[setup] ({i}/{total}) Account: {label}")
+        print(f"        Profile : {prof}")
+        print(f"        A Chrome window will open. Log in if prompted; "
+              f"usage data loads automatically.")
+        try:
+            recs, warnings = capture(
+                platform, usage_url, login_url, keyword, scroll,
+                headless, prof, start=start, end=end, account=label)
+        except Exception as e:
+            print(f"[setup] account '{label}' failed: {e}")
+            continue
+        if warnings:
+            for w in warnings:
+                print("  ⚠ " + w)
+        print(f"[setup] account '{label}': captured {len(recs)} records.")
+
+    print(f"\n[setup] Done. {total} account(s) configured for {platform}.")
+    print(f"        Verify : python3 verify_data.py --platform {platform} --all-accounts")
+    print(f"        Report : python3 build_report.py --platform {platform} --account all")
+    return labels
+
+
 def main():
     ap = argparse.ArgumentParser(description="Capture AI platform usage via Playwright.")
     ap.add_argument("--platform", required=True, help="qoder / trae / codebuddy / deepseek")
@@ -1240,11 +1331,32 @@ def main():
     ap.add_argument("--discover", action="store_true",
                     help="capture the platform's usage API endpoint for future "
                          "automatic download (one-time setup)")
+    ap.add_argument("--setup", action="store_true",
+                    help="guided multi-account bootstrap: configures N accounts "
+                         "(count from configs/accounts.json or a prompt), logging "
+                         "in once per account and caching the session cookies.")
     args = ap.parse_args()
 
     if args.discover:
         discover(args.platform, args.url, args.login_url, args.keyword,
                  args.headless, args.profile_dir, args.account)
+        return
+
+    if args.setup:
+        s = e = None
+        if args.start:
+            s = datetime.strptime(args.start, "%Y-%m-%d").date()
+        if args.end:
+            e = datetime.strptime(args.end, "%Y-%m-%d").date()
+        if s and not e:
+            e = date.today()
+        if e and not s:
+            s = e
+        if not s or not e:
+            e = date.today()
+            s = e - timedelta(days=30)
+        setup_accounts(args.platform, args.url, args.login_url, args.keyword,
+                       args.scroll, args.headless, start=s, end=e)
         return
 
     # Resolve requested date range (used for incremental storage + Qoder UI).

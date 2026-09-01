@@ -132,6 +132,25 @@ python3 build_report.py --platform codebuddy --account work --start 2026-08-01 -
 python3 build_report.py --platform codebuddy --account all --start 2026-08-01 --end 2026-08-31
 ```
 
+### First-time setup across many accounts (`--setup`)
+
+If you own several accounts on a platform, you don't have to invent `--account`
+labels or log in blindly. Run the wizard once:
+
+```bash
+python3 scrape_usage.py --platform codebuddy --url <usage-page> --setup
+```
+
+It either reads the `configs/accounts.json` label list or prompts for a count,
+then loops once per account — each in its own persistent Chrome profile —
+asking you to log in **only the first time** and caching that session's cookies.
+Afterwards `--account all` reports every account with no further logins.
+
+> The wizard does NOT scan the installed CodeBuddy / Qoder / TRAE client. Those
+> apps keep their account list in opaque local stores (VS Code-style LevelDB),
+> which are fragile and privacy-sensitive to parse. The count comes from
+> `configs/accounts.json` or a one-question prompt instead.
+
 ## Unified data flow
 
 ```
