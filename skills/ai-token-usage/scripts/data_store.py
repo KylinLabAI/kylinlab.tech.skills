@@ -9,13 +9,13 @@ Store layout (under ``--data-dir``, default ``<skill>/data``):
 
     data/
       data.csv                       # combined: every host AND agent merged into one file
-      localhost/                     # the local machine (default host label)
+      <masked-host>/                 # a machine, labelled with its (masked) real hostname
         claudecode/data.csv          # one CSV per agent group, nested under the host
         opencode/data.csv
         copilot/data.csv
         codex/data.csv
         ...
-      host-b/                        # another machine merged in via --import-host host-b
+      ky*****in/                     # e.g. another machine merged in via --import-host kylin-win
         claudecode/data.csv
         ...
 
@@ -45,9 +45,43 @@ files without duplicates.
 from __future__ import annotations
 
 import csv
+import socket
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+
+def mask_host(host: str) -> str:
+    """Mask a hostname for privacy: keep the first/last 2 chars, star the middle.
+
+    e.g. ``kylin-win`` -> ``ky*****in``.  Hosts of 4 chars or fewer keep only the
+    first and last character (``mbp`` -> ``m*p``).  The transform is idempotent,
+    so a value that is already masked is returned unchanged.
+    """
+    host = (host or "").strip()
+    if not host:
+        return "unknown"
+    # ``localhost`` / ``unknown`` are generic labels, not real machine names, so
+    # they are left untouched (only actual hostnames get masked for privacy).
+    if host.lower() in ("localhost", "unknown"):
+        return host
+    if len(host) <= 4:
+        if len(host) <= 2:
+            return host
+        return host[0] + "*" * (len(host) - 2) + host[-1]
+    return host[:2] + "*" * (len(host) - 4) + host[-2:]
+
+
+def real_hostname() -> str:
+    """Best-effort real machine name (not ``localhost``).
+
+    Uses ``socket.gethostname()``; falls back to ``unknown`` if it is empty or
+    resolves to the loopback label ``localhost``.
+    """
+    name = (socket.gethostname() or "").strip()
+    if not name or name.lower() == "localhost":
+        return "unknown"
+    return name
 
 from common import (
     AGENT_CLAUDE_CLI,
@@ -261,7 +295,7 @@ def load_imported_csv(
                 continue
             agent = (r.get("agent") or "").strip()
             group = (r.get("agent_group") or "").strip() or AGENT_GROUP_MAP.get(agent, agent or "unknown")
-            host = import_host or (r.get("host") or "").strip() or stem
+            host = mask_host(import_host or (r.get("host") or "").strip() or stem)
             rows.append(
                 {
                     "host": host,

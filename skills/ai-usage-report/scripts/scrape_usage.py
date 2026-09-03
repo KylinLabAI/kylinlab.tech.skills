@@ -168,6 +168,122 @@ def _extract_email(text):
     return m.group(0) if m else None
 
 
+def _detect_via_profile_dom_legacy(page, label):
+    """Robustly read the account VALUE next to `label` on a profile page.
+
+    A regex over flattened page text (the old approach) kept matching the
+    *label itself* (e.g. TRAE's "昵称" = "nickname"), not the value. Here we
+    use the live DOM: find the element that carries the label, then return the
+    adjacent value (a sibling, the parent's remaining text, or the text after
+    the label in the same element). Returns the raw value, or None.
+    """
+    try:
+        return page.evaluate("""(label) => {
+            const norm = s => (s || '').trim();
+            const body = document.body;
+            if (!body) return null;
+            const els = Array.from(body.querySelectorAll('*'));
+            for (const el of els) {
+                const t = norm(el.textContent);
+                if (!t) continue;
+                const isLabel = (t === label)
+                    || t.startsWith(label + '：') || t.startsWith(label + ':')
+                    || t.startsWith(label + ' ');
+                if (!isLabel) continue;
+                // (a) value in a sibling of the label element
+                const parent = el.parentElement;
+                if (parent) {
+                    for (const sib of parent.children) {
+                        if (sib === el) continue;
+                        const sv = norm(sib.textContent);
+                        if (sv && sv !== t) return sv;
+                    }
+                    // (b) value is the parent's text minus the label
+                    const pv = norm(parent.textContent).replace(t, '').trim();
+                    if (pv && pv !== label) return pv;
+                }
+                // (c) same element, text after the label (with/without colon)
+                if (t.length > label.length) {
+                    const after = t.slice(label.length).replace(/^[\\s:：]+/, '');
+                    if (after) return after;
+                }
+            }
+            return null;
+        }""", label)
+    except Exception:
+        return None
+
+
+# Substrings that mark a *helper/description* line rather than the real value
+# (e.g. TRAE's 昵称 row shows "您的个人资料名称" between the label and the value).
+_DESC_MARKERS = ("您的", "资料", "名称", "昵称", "settings", "查看", "说明",
+                 "hint", "desc", "账号信息", "profile", "修改", "绑定", "换绑")
+
+
+def _detect_via_profile_dom(page, label):
+    """Robustly read the account VALUE next to `label` on a profile page.
+
+    Find the label element, then walk UP to the enclosing item and return the
+    sibling *branch* that carries the value, skipping the label and any
+    description line (e.g. TRAE's "您的个人资料名称"). Returns the raw value,
+    or None.
+    """
+    try:
+        return page.evaluate("""(args) => {
+            const label = args.label, markers = args.markers;
+            const norm = s => (s || '').trim();
+            const body = document.body;
+            if (!body) return null;
+            const labelEls = Array.from(body.querySelectorAll('*')).filter(e => {
+                const t = norm(e.textContent);
+                // Exact-match only: a substring/startsWith match would also hit
+                // ANCESTOR elements (e.g. the item row whose text is
+                // "昵称您的个人资料名称KylinLab") and walk the wrong branch.
+                return t === label || t === label + '：' || t === label + ':';
+            });
+            for (const el of labelEls) {
+                let n = el;
+                for (let i = 0; i < 5 && n; i++) {
+                    n = n.parentElement;
+                    if (!n) break;
+                    const branches = Array.from(n.children).filter(c => !c.contains(el));
+                    let found = null;
+                    for (const b of branches) {
+                        const bt = norm(b.textContent);
+                        if (!bt || bt === label || bt.startsWith(label)) continue;
+                        const low = bt.toLowerCase();
+                        let isDesc = low.length > 40;
+                        if (!isDesc) {
+                            for (const m of markers) {
+                                if (low.indexOf(m.toLowerCase()) !== -1) { isDesc = true; break; }
+                            }
+                        }
+                        if (isDesc) continue;
+                        found = bt; break;
+                    }
+                    if (found) return found;
+                    // fallback: the value may be a direct text node of n (sibling
+                    // to the label branch), not wrapped in its own element.
+                    const labelBranch = Array.from(n.children).find(c => c.contains(el)) || el;
+                    const rem = norm(n.textContent).replace(norm(labelBranch.textContent), '').replace(label, '').trim();
+                    if (rem && rem !== label && !rem.startsWith(label)) {
+                        const rlow = rem.toLowerCase();
+                        let rDesc = rlow.length > 40;
+                        if (!rDesc) {
+                            for (const m of markers) {
+                                if (rlow.indexOf(m.toLowerCase()) !== -1) { rDesc = true; break; }
+                            }
+                        }
+                        if (!rDesc) return rem;
+                    }
+                }
+            }
+            return null;
+        }""", {"label": label, "markers": list(_DESC_MARKERS)})
+    except Exception:
+        return None
+
+
 def _detect_account_name(page, platform):
     """Return the raw account name (string) from the platform's user-info API
     or profile/usage page, or None if it can't be read.
@@ -177,7 +293,9 @@ def _detect_account_name(page, platform):
       2) an email visible on the CURRENT logged-in page (the usage/account
          header almost always shows it; label-agnostic, robust across SPA
          layouts and languages).
-      3) profile-page DOM parse keyed on a label (fallback only).
+      3) profile-page DOM query keyed on a label (find the label element, read
+         its value) — robust against SPA label/value split layouts.
+      4) profile-page flattened-text regex (last-resort fallback).
     """
     plat = platform.lower()
     # 1) User-info REST API (most reliable; no DOM-timing dependency).
@@ -204,7 +322,8 @@ def _detect_account_name(page, platform):
             return email
     except Exception:
         pass
-    # 3) Profile-page DOM parse (fallback): navigate, then try email, then label.
+    # 3) Profile-page DOM query (robust): navigate, then try email, then label
+    #    via a live DOM read, then a flattened-text regex fallback.
     info = PROFILE_URLS.get(plat)
     if not info:
         return None
@@ -220,6 +339,9 @@ def _detect_account_name(page, platform):
         page.wait_for_timeout(4000)
     except Exception:
         pass
+    dom = _detect_via_profile_dom(page, label)
+    if dom:
+        return dom
     text = _page_text(page)
     email = _extract_email(text)
     if email:
@@ -259,6 +381,50 @@ def _maybe_confirm(suggested, fallback):
     return val
 
 
+_QODER_CURRENT_ID = None  # set during resolution; consumed by _write_account_meta
+
+
+def _qoder_identity(page):
+    """Return qoder's /api/v1/me payload (dict) or None."""
+    try:
+        data = page.evaluate(
+            "async (u) => { try { const r = await fetch(u, {credentials:'include'});"
+            " const t = await r.text(); try { return JSON.parse(t); } catch(e){ return null; } }"
+            " catch(e){ return null; } }",
+            "https://qoder.com.cn/api/v1/me")
+        if isinstance(data, dict) and data.get("id"):
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def _disambiguate_qoder_label(base, cur_id):
+    """Qoder exposes only the ACTIVE account via its API, so a user with several
+    qoder accounts must capture each by switching the logged-in session. Distinct
+    accounts that happen to share the same display name must not clobber each
+    other's folder: append -2, -3, ... when the stored id differs.
+    """
+    if not cur_id:
+        return base
+    root = data_store.platform_data_dir("qoder")
+    clash = 0
+    for name in (os.listdir(root) if os.path.isdir(root) else []):
+        aj = os.path.join(root, name, "account.json")
+        if not os.path.exists(aj):
+            continue
+        try:
+            m = json.load(open(aj, encoding="utf-8"))
+        except Exception:
+            continue
+        if m.get("name") != base:
+            continue
+        if m.get("account_id") == cur_id:
+            return base  # same account, re-captured
+        clash += 1
+    return base if clash == 0 else f"{base}-{clash + 1}"
+
+
 def _resolve_data_label(page, platform, account, label=None):
     """Decide the on-disk data label.
 
@@ -278,7 +444,14 @@ def _resolve_data_label(page, platform, account, label=None):
         return label
     raw = _detect_account_name(page, platform)
     if raw:
-        detected = mask_account_name(raw)
+        # Lowercase so the same account (e.g. "kylinlab" vs "KylinLab") resolves
+        # to ONE masked label across platforms, instead of two near-duplicates.
+        detected = mask_account_name(raw.lower())
+        if platform.lower() == "qoder":
+            global _QODER_CURRENT_ID
+            ident = _qoder_identity(page)
+            _QODER_CURRENT_ID = ident.get("id") if ident else None
+            detected = _disambiguate_qoder_label(detected, _QODER_CURRENT_ID)
         print(f"[account] 自动识别到脱敏账号: {detected}")
         return _maybe_confirm(detected, account)
     print(f"[account] 未能自动识别账号名；回退到占位标签 '{account}'。"
@@ -1668,16 +1841,25 @@ def _migrate_data_folder(platform, from_label, to_label):
         print(f"[migrate] data {from_label or '(default)'} -> {to_label}")
 
 
-def _write_account_meta(platform, label, source_url=None):
+def _write_account_meta(platform, label, source_url=None, account_id=None):
     """Record the masked account name + its profile source for reference."""
     d = data_store.platform_data_dir(platform, label)
-    meta = {
+    meta = {}
+    aj = os.path.join(d, "account.json")
+    if os.path.exists(aj):
+        try:
+            meta = json.load(open(aj, encoding="utf-8"))
+        except Exception:
+            meta = {}
+    meta.update({
         "name": label,
         "masked": True,
         "source_url": source_url,
         "detected_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    with open(os.path.join(d, "account.json"), "w", encoding="utf-8") as f:
+    })
+    if account_id:
+        meta["account_id"] = account_id
+    with open(aj, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
@@ -1880,7 +2062,8 @@ def main():
     print(f"[done] stored {len(recs)} records -> {path}")
     # Record the source profile URL + masked name for reference/reports.
     src = PROFILE_URLS.get(args.platform.lower(), (None, None))[0]
-    _write_account_meta(args.platform, final_label, src)
+    _write_account_meta(args.platform, final_label, src,
+                        account_id=_QODER_CURRENT_ID if args.platform.lower() == "qoder" else None)
     print(f"        data dir: {data_store.platform_data_dir(args.platform, final_label)}")
     acc_flag = f" --account {final_label}" if final_label else ""
     print(f"        next: python3 verify_data.py --platform {args.platform}"

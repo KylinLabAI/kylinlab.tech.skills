@@ -86,6 +86,8 @@ from data_store import (
     merge_rows_into_store,
     load_imported_csv,
     AGENT_GROUP_MAP,
+    mask_host,
+    real_hostname,
 )
 
 
@@ -111,11 +113,14 @@ def default_data_dir() -> str:
 def default_host() -> str:
     """Local machine label for the raw-data store.
 
-    The local machine is labelled ``localhost`` so the store is organised as
-    ``data/localhost/<agent>/data.csv``; other machines are merged in with an
-    explicit ``--host`` / ``--import-host`` label (e.g. ``host-b``).
+    The local machine is labelled with its **real** hostname (via
+    ``socket.gethostname()``), masked for privacy — e.g. ``kylin-win`` becomes
+    ``ky*****in``.  This keeps each machine distinct in the store
+    (``data/<masked-host>/<agent>/data.csv``) instead of every machine writing
+    the same ``localhost`` label.  Other machines are merged in with an explicit
+    ``--import-host`` label (also masked).
     """
-    return "localhost"
+    return mask_host(real_hostname())
 
 
 def parse_args() -> argparse.Namespace:
@@ -228,7 +233,8 @@ def parse_args() -> argparse.Namespace:
         "--host",
         default=default_host(),
         help="Machine label for local sessions written to the data store "
-             "(default: localhost). Used so the same session_key from two "
+             "(default: the real hostname, masked for privacy, e.g. "
+             "kylin-win -> ky*****in). Used so the same session_key from two "
              "machines stays distinct (stored as data/<host>/<agent>/data.csv).",
     )
     parser.add_argument(
@@ -482,8 +488,8 @@ def main() -> int:
         "usage_records_counted": total_counted,
     }
 
-    # --- Tag local sessions with the machine label ---
-    local_host = args.host
+    # --- Tag local sessions with the machine label (masked for privacy) ---
+    local_host = mask_host(args.host)
     for _info in session_infos.values():
         _info.host = local_host
 
@@ -724,6 +730,7 @@ def main() -> int:
         raw_payload = build_payload(
             daily, per_session, per_model, per_agent, session_infos, dates,
             args.top_sessions, metadata, per_agent_model, daily_agent_model,
+            per_host=per_host,
         )
         (raw_dir / "report-data.json").write_text(
             json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8"

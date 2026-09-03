@@ -247,13 +247,13 @@ Layout:
 ```
 <data-dir>/
   data.csv                       # combined: every host AND agent merged into one file
-  localhost/                     # the local machine (default host label)
+  <masked-host>/                 # a machine, labelled with its (masked) real hostname
     claudecode/data.csv          # one CSV per agent group, nested under the host
     opencode/data.csv
     copilot/data.csv
     codex/data.csv
     ...
-  host-b/                        # another machine merged in via --import-host host-b
+  ky*****in/                     # e.g. another machine merged in via --import-host kylin-win
     claudecode/data.csv
     ...
 ```
