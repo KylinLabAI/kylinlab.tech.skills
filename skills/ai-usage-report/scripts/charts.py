@@ -86,63 +86,81 @@ def plot_task(task_counter, out_dir):
     return save(fig, out_dir, "task_type.png")
 
 
-def render_account_breakdown(by_account):
-    """HTML table comparing accounts on one platform (only when >1 account)."""
+def render_account_breakdown_md(by_account, unit):
+    """Markdown table comparing accounts on one platform (only when >1 account)."""
     if not by_account or len(by_account) < 2:
         return ""
     rows = sorted(by_account.items(), key=lambda kv: -kv[1]["cost"])
-    body = "".join(
-        f"<tr><td>{name}</td><td>{v['n']}</td><td>{v['free']}</td>"
-        f"<td>{v['n'] - v['free']}</td><td>{round(v['cost'], 2)}</td>"
-        f"<td>{len(v['days'])}</td></tr>"
+    body = "\n".join(
+        f"| {name} | {v['n']} | {v['free']} | {v['n'] - v['free']} | "
+        f"{round(v['cost'], 2)} {unit} | {len(v['days'])} |"
         for name, v in rows)
-    return (f"<h2>账号分布</h2>"
-            f"<table><tr><th>账号</th><th>总请求</th><th>免费</th><th>付费</th>"
-            f"<th>费用</th><th>活跃天数</th></tr>{body}</table>"
-            f"<p class=\"note\">同平台多账号的费用单位一致，可以相加；"
-            f"跨平台的费用单位不同，不可相加。</p>")
+    return (f"## 账号分布\n\n"
+            f"| 账号 | 总请求 | 免费 | 付费 | 费用 | 活跃天数 |\n"
+            f"| --- | --- | --- | --- | --- | --- |\n{body}\n\n"
+            f"> 同平台多账号的费用单位一致，可以相加；跨平台的费用单位不同，不可相加。\n")
 
 
-def render_html(platform, total, free, paid, total_cost,
-                day_labels, day_n, day_free, day_paid, day_cost,
-                model_counter, model_cost, task_counter,
-                by_account=None):
-    day_rows = "".join(
-        f"<tr><td>{l}</td><td>{n}</td><td>{f}</td><td>{p}</td><td>{c}</td></tr>"
+def render_markdown(platform, total, free, paid, total_cost, unit,
+                    day_labels, day_n, day_free, day_paid, day_cost,
+                    model_counter, model_cost, task_counter,
+                    dmin=None, dmax=None, by_account=None):
+    """Render the per-platform usage report as a Markdown document.
+
+    Charts are still produced as PNGs (see plot_*); they are embedded via
+    relative ``![](name.png)`` links so the .md is portable inside its folder.
+    """
+    rng = f"（{dmin} ~ {dmax}）" if dmin and dmax else ""
+    day_rows = "\n".join(
+        f"| {l} | {n} | {f} | {p} | {c} |"
         for l, n, f, p, c in zip(day_labels, day_n, day_free, day_paid, day_cost))
-    model_rows = "".join(
-        f"<tr><td>{m}</td><td>{c}</td><td>{round(model_cost[m], 2)}</td></tr>"
+    model_rows = "\n".join(
+        f"| {m} | {c} | {round(model_cost[m], 2)} |"
         for m, c in sorted(model_counter.items(), key=lambda x: -x[1]))
-    task_rows = "".join(
-        f"<tr><td>{m}</td><td>{c}</td></tr>"
+    task_rows = "\n".join(
+        f"| {m} | {c} |"
         for m, c in sorted(task_counter.items(), key=lambda x: -x[1]))
-    return f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<style>body{{font-family:-apple-system,'PingFang SC',sans-serif;margin:24px;color:#222}}
-h1{{border-bottom:2px solid #2c7fb8;padding-bottom:8px}} h2{{color:#2c7fb8;margin-top:32px}}
-.kpi{{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0}}
-.kpi div{{background:#f4f7fb;border:1px solid #dce3ec;border-radius:10px;padding:16px 20px;min-width:150px}}
-.kpi b{{font-size:24px;color:#2c7fb8;display:block}}
-table{{border-collapse:collapse;margin-top:12px}} td,th{{border:1px solid #ddd;padding:6px 12px;text-align:center}}
-img{{max-width:100%;margin:12px 0;border:1px solid #eee;border-radius:8px}}
-.note{{background:#fff8e1;border-left:4px solid #ffc107;padding:10px 14px;color:#665}}
-</style></head><body>
-<h1>AI 使用统计分析报告 — {platform}</h1>
-<h2>总体</h2>
-<div class="kpi">
-  <div><b>{total}</b>总请求次数</div>
-  <div><b>{free}</b>免费请求</div>
-  <div><b>{paid}</b>付费请求</div>
-  <div><b>{round(total_cost, 2)}</b>总费用</div>
-</div>
-<div class="note">说明：表中仅含单一费用列（无折扣信息）时，打折前 = 打折后 = 费用。
-「免费」指费用=0 的请求；「付费」指费用&gt;0 的请求。无单次耗时字段时省略请求时间相关图表。</div>
-{render_account_breakdown(by_account)}
-<h2>日期趋势</h2>
-<img src="daily_count.png"><img src="daily_cost.png">
-<table><tr><th>日期</th><th>总次数</th><th>免费</th><th>付费</th><th>费用</th></tr>{day_rows}</table>
-<h2>分布</h2>
-<img src="pie_count.png"><img src="pie_model.png"><img src="pie_model_cost.png"><img src="task_type.png">
-<table><tr><th>模型</th><th>次数</th><th>费用</th></tr>{model_rows}</table>
-<table><tr><th>任务类型</th><th>次数</th></tr>{task_rows}</table>
-<p class="note">任务类型由提示词关键词规则分类，仅供参考。</p>
-</body></html>"""
+    return f"""# AI 使用统计分析报告 — {platform}{rng}
+
+## 总体
+
+| 指标 | 数值 |
+| --- | --- |
+| 总请求次数 | {total} |
+| 免费请求 | {free} |
+| 付费请求 | {paid} |
+| 总费用 | {round(total_cost, 2)} {unit} |
+
+> 说明：表中仅含单一费用列（无折扣信息）时，打折前 = 打折后 = 费用。「免费」指费用=0 的请求；「付费」指费用>0 的请求。无单次耗时字段时省略请求时间相关图表。
+
+{render_account_breakdown_md(by_account, unit)}
+## 日期趋势
+
+![每日请求次数（免费/付费）](daily_count.png)
+
+![每日费用趋势](daily_cost.png)
+
+| 日期 | 总次数 | 免费 | 付费 | 费用 |
+| --- | --- | --- | --- | --- |
+{day_rows}
+
+## 分布
+
+![次数分布：免费 vs 付费](pie_count.png)
+
+![请求次数 - 模型分布](pie_model.png)
+
+![请求费用 - 模型分布](pie_model_cost.png)
+
+![任务类型分布](task_type.png)
+
+| 模型 | 次数 | 费用 |
+| --- | --- | --- |
+{model_rows}
+
+| 任务类型 | 次数 |
+| --- | --- |
+{task_rows}
+
+> 任务类型由提示词关键词规则分类，仅供参考。
+"""

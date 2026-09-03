@@ -147,21 +147,44 @@ def platform_data_dir(platform, account=None):
 
 
 def report_request_dir(req_start, req_end):
-    """Top-level report folder for one request range: report/<start>_<end>/."""
+    """Top-level report folder for one request range: report/<start>_<end>/.
+
+    Kept for backwards compatibility; new reports use report_run_dir() instead.
+    """
     return os.path.join(ROOT, "report",
                         f"{req_start.strftime('%Y-%m-%d')}_{req_end.strftime('%Y-%m-%d')}")
 
 
-def platform_report_dir(platform, account=None, req_start=None, req_end=None):
+def report_run_dir(run_id=None):
+    """Top-level report folder, named by a run id.
+
+    Default: a generation timestamp ``YYYY-MM-DD_HH-MM-SS`` (local time), so each
+    report generation is an immutable snapshot. All reports of one generation
+    live under this folder, which lets the summary link to the per-vendor
+    reports. Pass ``run_id`` (e.g. via ``--out``) to fix the folder name.
+    """
+    if not run_id:
+        run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return os.path.join(ROOT, "report", run_id)
+
+
+def platform_report_dir(platform, account=None, req_start=None, req_end=None,
+                        run_id=None):
     """Report output dir for a platform.
 
-    New layout (when a request range is supplied) — one folder per request,
-    with a sub-folder per vendor, and `_all` aggregating a vendor's accounts:
-        report/<start>_<end>/<platform>[/<account>]
-    The default (unnamed) account has no extra sub-folder. When no range is
-    given, the legacy report/<platform>[/<account>] is returned for backwards
-    compatibility.
+    Preferred layout (when ``run_id`` is supplied) — one folder per generation,
+    with a sub-folder per vendor:
+        report/<run_id>/<platform>[/<account>]
+    The default (unnamed) account has no extra sub-folder. When a request range
+    is supplied (legacy) the range-based folder is used for backwards compat.
     """
+    if run_id:
+        d = os.path.join(report_run_dir(run_id), platform.lower())
+        acc = safe_account(account)
+        if acc:
+            d = os.path.join(d, acc)
+        os.makedirs(d, exist_ok=True)
+        return d
     if req_start and req_end:
         d = report_request_dir(req_start, req_end)
         d = os.path.join(d, platform.lower())

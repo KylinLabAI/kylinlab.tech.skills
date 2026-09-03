@@ -5,7 +5,7 @@ build_report.py — Build an analysis report from cached usage data.
 Reads all captured CSVs for a platform from data/<platform>/<account>/
 (managed by data_store.py), merges them, and runs the full analysis pipeline
 (analyze_usage.analyze) to produce a report under
-report/<start>_<end>/<platform>/  (one folder per request range).
+report/<run_id>/<platform>/  (one folder per generation; run_id defaults to a timestamp).
 
 If a date range is requested and some days are missing, it can auto-trigger
 scrape_usage.py to fill the gaps first (incremental fetch).
@@ -14,7 +14,7 @@ Multi-account: a platform can hold several accounts, each with its own folder
 (data/<platform>/<account>/). Pick one with `--account <name>` (report at
 report/<start>_<end>/<platform>/<account>/), or pass `--account all` to
 aggregate every account into a single vendor report
-(report/<start>_<end>/<platform>/report.html).
+(report/<run_id>/<platform>/report.md).
 
 Usage:
     python3 build_report.py --platform qoder [--start 2026-08-01] [--end 2026-08-15]
@@ -145,6 +145,10 @@ def main():
     ap.add_argument("--account", default=None,
                     help="account to report on; use 'all' to aggregate every "
                          "account of this platform")
+    ap.add_argument("--out", default=None,
+                    help="report folder name (run id); default: a generation "
+                         "timestamp YYYY-MM-DD_HH-MM-SS. Use the same value as "
+                         "cross_platform_report.py so the summary links resolve.")
     args = ap.parse_args()
 
     platform = args.platform
@@ -224,21 +228,19 @@ def main():
     print(f"[build] 平台 {label} 费用单位：{unit}"
           f"（不同平台单位不可直接相加）")
 
-    # build the report under report/<start>_<end>/<platform>[/<account>]
-    s = req_start or min(datetime.strptime(r["date"], "%Y-%m-%d").date()
-                         for r in rows if r.get("date"))
-    e = req_end or max(datetime.strptime(r["date"], "%Y-%m-%d").date()
-                       for r in rows if r.get("date"))
+    # Build the report under report/<run_id>/<platform>[/<account>].
+    # run_id defaults to a generation timestamp; pass --out to fix the name so
+    # the summary (cross_platform_report.py, same --out) links to this file.
     if all_accounts:
-        out_dir = data_store.platform_report_dir(platform, None, s, e)
+        out_dir = data_store.platform_report_dir(platform, None, run_id=args.out)
     elif account:
-        out_dir = data_store.platform_report_dir(platform, account, s, e)
+        out_dir = data_store.platform_report_dir(platform, account, run_id=args.out)
     else:
-        out_dir = data_store.platform_report_dir(platform, None, s, e)
-    summary = analyze.analyze(rows, platform, out_dir)
-    print(f"[build] platform={label} range={s}~{e}")
+        out_dir = data_store.platform_report_dir(platform, None, run_id=args.out)
+    summary = analyze.analyze(rows, platform, out_dir, unit=unit)
+    print(f"[build] platform={label} range={req_start}~{req_end}")
     print(f"        records={summary['total']} cost={summary['total_cost']}")
-    print(f"        report  : {os.path.join(out_dir, 'report.html')}")
+    print(f"        report  : {os.path.join(out_dir, 'report.md')}")
 
     # Help discover multi-account data instead of silently reporting one store.
     if not args.account:

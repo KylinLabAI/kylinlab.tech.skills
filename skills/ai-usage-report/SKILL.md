@@ -1,11 +1,11 @@
 ---
 name: ai-usage-report
-description: Analyze AI platform usage export files (CodeBuddy xlsx, DeepSeek zip csv, Qoder, TRAE, generic csv/json/xlsx) and generate a statistical HTML report with daily/cost/model/task charts. Use when the user wants to summarize, visualize, or report on exported AI assistant usage data.
+description: Analyze AI platform usage export files (CodeBuddy xlsx, DeepSeek zip csv, Qoder, TRAE, generic csv/json/xlsx) and generate a statistical Markdown report with daily/cost/model/task charts. Use when the user wants to summarize, visualize, or report on exported AI assistant usage data.
 ---
 
 # AI Usage Report
 
-Analyze AI platform usage data and produce a self-contained HTML report (with
+Analyze AI platform usage data and produce a self-contained Markdown report (with
 PNG charts) covering overall stats, daily trends, and model / task /
 free-vs-paid distributions.
 
@@ -51,11 +51,10 @@ built-in default **`~/Desktop/ai-usage-report`**:
 │   └── <account>/                        # ONE self-contained folder per account
 │       ├── raw/                          # that account's per-request RAW snapshots
 │       └── <YYYY-MM>.csv                 # that account's monthly captures
-└── report/<start>_<end>/                 # ONE folder per request range
-    ├── <platform>/                        # per-vendor report
+└── report/<run_id>/                      # ONE folder per generation (timestamp YYYY-MM-DD_HH-MM-SS)
+    ├── <platform>/                        # per-vendor report (report.md)
     ├── <platform>/<account>/              # per-account report (optional)
-    ├── <platform>/_all/                   # vendor report across its accounts
-    └── summary/                           # cross-vendor combined report
+    └── summary/                           # cross-vendor combined report (report.md)
 ```
 
 The default (unnamed) account is the platform folder itself, so data captured
@@ -143,7 +142,7 @@ for backwards compatibility.
   every account of a platform.
 - **Report** — `build_report.py --account <label>` for one account, or
   `--account all` to aggregate **all** accounts into
-  `report/<s>_<e>/<platform>/_all/` with a per-account breakdown table. With no
+  `report/<run_id>/<platform>/` (with a per-account breakdown table when >1 account). With no
   `--account`, `build_report.py` reports the default store and prints a hint
   listing any other accounts it found.
 - **Cross-platform summary** — `cross_platform_report.py` lists each
@@ -200,8 +199,8 @@ Afterwards `--account all` reports every account with no further logins.
 Platform web portal  ──(scrape_usage.py --start/--end [--account A])──► data/<p>/[<A>/]<YYYY-MM>.csv
 CodeBuddy .xlsx  ──► data/<p>/[<A>/]raw/ ──(normalize.py)──► data/<p>/[<A>/]<YYYY-MM>.csv
 DeepSeek  .zip   ──► data/<p>/[<A>/]raw/ ──(normalize.py)──► data/<p>/[<A>/]<YYYY-MM>.csv
-data/<p>/.../<YYYY-MM>.csv ──(build_report.py [--account A|all])──► report/<p>/[<A>/|_all/]<s>_<e>/report.html
-all platforms    ──(cross_platform_report.py)──► report/<s>_<e>/summary/summary.html
+data/<p>/.../<YYYY-MM>.csv ──(build_report.py [--account A|all])──► report/<run_id>/<p>/[<A>/]report.md
+all platforms    ──(generate_reports.py)──► report/<run_id>/summary/report.md  (+ per-vendor report.md)
 ```
 
 ## Supported inputs (analyze_usage.py, auto-detected by filename + content)
@@ -305,24 +304,32 @@ python3 scrape_usage.py --platform qoder --url https://qoder.com.cn/account/usag
 python3 scrape_usage.py --platform trae --url <trae-usage-url> \
   --start 2026-07-13 --end 2026-08-11
 
-# 3) Verify, then build per-platform reports:
+# 3) Recommended: generate the WHOLE set (per-vendor + summary) into ONE
+#    timestamped folder so the summary links resolve. Default window = full cache.
+python3 generate_reports.py --start 2026-07-13 --end 2026-08-11
+
+# --- Or step by step (verify gate still runs inside build_report) ---
+# 3a) Per-platform reports (single account, or --account all to aggregate):
 python3 verify_data.py --platform codebuddy --start 2026-07-13 --end 2026-08-11
 python3 build_report.py --platform codebuddy --start 2026-07-13 --end 2026-08-11
 #    Multi-account: scope by --account, or aggregate with --account all
 python3 build_report.py --platform codebuddy --account work --start 2026-07-13 --end 2026-08-11
 python3 build_report.py --platform codebuddy --account all --start 2026-07-13 --end 2026-08-11
 
-# 4) Cross-platform summary (units are NOT additive):
-python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
+# 4) Cross-platform summary (units are NOT additive). Pass the SAME --out as step 3a
+#    so the summary and per-vendor reports share one folder:
+python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11 --out 2026-07-13_2026-08-11
 ```
 
-- `--out DIR`  : output folder (**default `~/Desktop/<input>_report`** for
-  one-shot; `~/Desktop/ai-usage-report/report/<s>_<e>/<platform>/` for store)
+-   `--out DIR`  : report folder name / run id (**default: a generation timestamp
+  `YYYY-MM-DD_HH-MM-SS`**); pass the SAME value to build_report.py and
+  cross_platform_report.py so the summary links resolve. For the store path it is
+  `~/Desktop/ai-usage-report/report/<run_id>/<platform>/`
 - `--platform`: force a platform label when auto-detect is ambiguous
 
 ## Output
 
-`<out>/report.html` plus charts: `daily_count.png`, `daily_cost.png`,
+`<out>/report.md` plus charts: `daily_count.png`, `daily_cost.png`,
 `pie_count.png`, `pie_model.png`, `pie_model_cost.png`, `task_type.png`.
 
 ## Notes / assumptions

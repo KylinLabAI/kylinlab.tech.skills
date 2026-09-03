@@ -2,7 +2,7 @@
 """Generate a combined cross-platform AI usage summary (last N days).
 
 Reads all captured CSVs from the data store for each platform, runs the
-verify gate so incomplete captures are flagged, and emits a single HTML
+verify gate so incomplete captures are flagged, and emits a single Markdown
 summary with a per-platform comparison + daily trend + report links.
 
 IMPORTANT: cost units differ per platform and are NOT additive:
@@ -13,9 +13,9 @@ Do not sum across platforms.
 Usage:
   python3 cross_platform_report.py [--days 30] [--start 2026-07-13] [--end 2026-08-11]
 
-Output (per request range):
-  report/<start>_<end>/summary/report.html   # cross-vendor combined report
-  (per-vendor reports are produced by build_report.py under report/<start>_<end>/<platform>/)
+Output (one folder per generation, named by a timestamp run id):
+  report/<run_id>/summary/report.md          # cross-vendor combined report
+  (per-vendor reports are produced by build_report.py under report/<run_id>/<platform>/)
 """
 import argparse
 import os
@@ -55,6 +55,10 @@ def main():
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--start", default=None, help="yyyy-mm-dd (overrides --days)")
     ap.add_argument("--end", default=None, help="yyyy-mm-dd (default: today)")
+    ap.add_argument("--out", default=None,
+                    help="report folder name (run id); default: a generation "
+                         "timestamp. Pass the SAME value used for build_report.py "
+                         "so the per-vendor links resolve.")
     args = ap.parse_args()
 
     today = dt.date.today()
@@ -69,12 +73,11 @@ def main():
 
     # Report layout: one folder per request range, with a per-vendor sub-folder;
     # the combined summary lives at report/<start>_<end>/summary/.
-    req_dir = data_store.report_request_dir(start, end)
+    req_dir = data_store.report_run_dir(args.out)
     plat_link = {}
     for p in PLATS:
-        pdir = data_store.platform_report_dir(p, None, start, end)
-        plat_link[p] = (os.path.join("..", p, "report.html")
-                        if os.path.isfile(os.path.join(pdir, "report.html")) else f"{p}/")
+        # Per-vendor report lives at ../<platform>/report.md relative to summary/.
+        plat_link[p] = f"../{p}/"
 
     plat_verify = {}   # (platform, account) -> (errors, warnings)
     stats = {}
@@ -121,72 +124,69 @@ def main():
             except Exception as e:
                 plat_verify[key] = ([], [f"verify 失败: {e}"])
 
-    # ---- build HTML ----
+    # ---- build Markdown ----
     def _col(key):
         """Human label for a (platform, account) column."""
         p, acc = key
         return LABEL[p] if not acc else f"{LABEL[p]} · {acc}"
 
-    rows_cmp = "".join(
-        f"<tr><td>{_col(k)}</td><td>{stats[k]['n']}</td>"
-        f"<td>{stats[k]['paid']}</td><td>{stats[k]['free']}</td>"
-        f"<td>{stats[k]['cost']} {UNIT[k[0]]}</td>"
-        f"<td>{stats[k]['wdays']}</td>"
-        f"<td>{', '.join(f'{m} ({round(v,1)})' for m,v in stats[k]['models'].items())}</td>"
-        f"<td><a href='{stats[k]['link']}/report.html' target='_blank'>打开报告</a></td></tr>"
+    def _esc(x):
+        return str(x).replace("|", "\\|")
+
+    rows_cmp = "\n".join(
+        f"| {_esc(_col(k))} | {stats[k]['n']} | {stats[k]['paid']} | "
+        f"{stats[k]['free']} | {stats[k]['cost']} {UNIT[k[0]]} | {stats[k]['wdays']} | "
+        f"{_esc(', '.join(f'{m} ({round(v,1)})' for m,v in stats[k]['models'].items()))} | "
+        f"[打开报告]({stats[k]['link']}report.md) |"
         for k in cols
     )
 
-    verify_notes = "".join(
-        f"<li><b>{_col(k)}</b>: "
+    verify_notes = "\n".join(
+        f"- **{_esc(_col(k))}**: "
         + ("✅ 校验通过" if not any(plat_verify[k])
            else "; ".join("⚠ " + w for w in plat_verify[k][1])
            + ("; " + "; ".join("❌ " + e for e in plat_verify[k][0]) if plat_verify[k][0] else ""))
-        + "</li>"
         for k in cols
     )
 
     sd = sorted(all_dates)
-    daily_head = "".join(f"<th>{_col(k)}</th>" for k in cols)
+    daily_head = "".join(f"| {_esc(_col(k))} " for k in cols)
     daily_rows = ""
     for d in sd:
         if not (start <= dt.datetime.strptime(d, "%Y-%m-%d").date() <= end):
             continue
-        tds = "".join(f"<td>{round(combined[d].get(k, 0), 2)}</td>" for k in cols)
-        daily_rows += f"<tr><td>{d}</td>{tds}</tr>"
+        tds = "".join(f"| {round(combined[d].get(k, 0), 2)} " for k in cols)
+        daily_rows += f"| {d} {tds}|\n"
 
-    html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<style>body{{font-family:-apple-system,'PingFang SC',sans-serif;margin:24px;color:#222}}
-h1{{border-bottom:2px solid #2c7fb8;padding-bottom:8px}}
-h2{{color:#2c7fb8;margin-top:32px}}
-table{{border-collapse:collapse;margin-top:12px}} td,th{{border:1px solid #ddd;padding:6px 12px;text-align:center}}
-.note{{background:#fff8e1;border-left:4px solid #ffc107;padding:10px 14px;color:#665;margin:12px 0}}
-.warn{{background:#fdecea;border-left:4px solid #e53935;padding:10px 14px;margin:12px 0}}
-a{{color:#2c7fb8}}
-</style></head><body>
-<h1>AI 平台使用统计 · 汇总（{start} ~ {end}）</h1>
-<div class="note"><b>单位说明：</b>各平台费用单位不同且<b>不可直接相加</b>——
-Qoder/DeepSeek 为美元/额度，TRAE/CodeBuddy 为积分(points)。
-跨平台比较请使用「请求数 / 活跃天数」等无量纲指标。
-数据来自本地已抓取缓存，未做外发。</div>
-<div class="warn"><b>数据完整性校验：</b>
-<ul>{verify_notes}</ul>
-若有 ❌，请先用 <code>scrape_usage.py --platform &lt;p&gt; --start {start} --end {end}</code>
-补齐后再重新生成本报告。</div>
-<h2>平台 / 账号对比</h2>
-<table><tr><th>平台 · 账号</th><th>总请求</th><th>付费</th><th>免费</th><th>总费用(单位见各列)</th><th>窗口内活跃天数</th><th>Top 模型（费用）</th><th>独立报告</th></tr>
+    md = f"""# AI 平台使用统计 · 汇总（{start} ~ {end}）
+
+> **单位说明：** 各平台费用单位不同且**不可直接相加**——
+> Qoder/DeepSeek 为美元/额度，TRAE/CodeBuddy 为积分(points)。
+> 跨平台比较请使用「请求数 / 活跃天数」等无量纲指标。
+> 数据来自本地已抓取缓存，未做外发。
+
+## 数据完整性校验
+
+{verify_notes}
+
+若有 ❌，请先用 `scrape_usage.py --platform <p> --start {start} --end {end}` 补齐后再重新生成本报告。
+
+## 平台 / 账号对比
+
+| 平台 · 账号 | 总请求 | 付费 | 免费 | 总费用(单位见各列) | 窗口内活跃天数 | Top 模型（费用） | 独立报告 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 {rows_cmp}
-</table>
-<h2>每日费用趋势（按平台 · 账号，单位各自独立）</h2>
-<table><tr><th>日期</th>{daily_head}</tr>
-{daily_rows}
-</table>
-</body></html>"""
 
-    out = os.path.join(req_dir, "summary", "report.html")
+## 每日费用趋势（按平台 · 账号，单位各自独立）
+
+| 日期 {daily_head}|
+| ---{"| ---" * len(cols)}
+{daily_rows}
+"""
+    out = os.path.join(req_dir, "summary", "report.md")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
-        f.write(html)
+        f.write(md)
     print(f"[cross] written: {out}")
 
 

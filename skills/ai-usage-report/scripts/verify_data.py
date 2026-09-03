@@ -45,6 +45,24 @@ def _d(s):
         return None
 
 
+def _is_imported(platform, account):
+    """An account whose data came from an imported/exported file (per its
+    account.json `source` field) is authoritative: a missing day means zero
+    usage, NOT a dropped scrape page. Treat it like an official export for the
+    gate, so narrow/short exports don't trip the "incomplete capture" ERROR."""
+    try:
+        d = data_store.platform_data_dir(platform, account)
+        meta = os.path.join(d, "account.json")
+        if os.path.exists(meta):
+            import json
+            with open(meta, encoding="utf-8") as f:
+                if str(json.load(f).get("source", "")).lower() == "import":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def verify(platform, req_start=None, req_end=None, account=None):
     """Check one platform ACCOUNT for completeness.
 
@@ -54,7 +72,7 @@ def verify(platform, req_start=None, req_end=None, account=None):
     label = platform if not account else f"{platform}/{account}"
     files = data_store.list_data_files(platform, account)
     errors, warnings = [], []
-    export_based = normalize.has_export_raw(platform, account)
+    export_based = normalize.has_export_raw(platform, account) or _is_imported(platform, account)
 
     if not files:
         errors.append(f"无缓存数据：{label} 下没有任何 CSV。")

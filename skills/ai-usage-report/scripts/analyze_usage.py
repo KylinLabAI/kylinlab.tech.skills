@@ -251,7 +251,7 @@ def classify_task(prompt):
     return "其他/对话"
 
 
-def analyze(records, platform, out_dir):
+def analyze(records, platform, out_dir, unit=""):
     os.makedirs(out_dir, exist_ok=True)
     total = len(records)
     total_cost = sum(r["cost"] for r in records)
@@ -297,12 +297,18 @@ def analyze(records, platform, out_dir):
     charts.plot_model_pies(model_counter, model_cost, out_dir)
     charts.plot_task(task_counter, out_dir)
 
-    html = charts.render_html(platform, total, free, paid, total_cost,
-                              day_labels, day_n, day_free, day_paid, day_cost,
-                              model_counter, model_cost, task_counter,
-                              by_account=by_account if len(by_account) > 1 else None)
-    with open(os.path.join(out_dir, "report.html"), "w", encoding="utf-8") as f:
-        f.write(html)
+    dates = [r["date"] for r in records if r.get("date")]
+    # Consolidated rows store `date` as an ISO "YYYY-MM-DD" string, which sorts
+    # chronologically, so min/max need no parsing.
+    dmin = min(dates) if dates else None
+    dmax = max(dates) if dates else None
+    md = charts.render_markdown(platform, total, free, paid, total_cost, unit,
+                                day_labels, day_n, day_free, day_paid, day_cost,
+                                model_counter, model_cost, task_counter,
+                                dmin=dmin, dmax=dmax,
+                                by_account=by_account if len(by_account) > 1 else None)
+    with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
+        f.write(md)
     return {
         "total": total, "free": free, "paid": paid,
         "total_cost": round(total_cost, 2), "out": out_dir,
@@ -327,7 +333,7 @@ def main():
     print(f"Platform: {platform}")
     print(f"Records : {summary['total']} (free={summary['free']}, paid={summary['paid']})")
     print(f"Cost    : {summary['total_cost']}")
-    print(f"Report  : {os.path.join(out, 'report.html')}")
+    print(f"Report  : {os.path.join(out, 'report.md')}")
 
 
 if __name__ == "__main__":
