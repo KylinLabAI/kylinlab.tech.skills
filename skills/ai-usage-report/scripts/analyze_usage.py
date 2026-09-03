@@ -22,6 +22,11 @@ from datetime import datetime
 import charts
 
 try:
+    import data_store
+except ImportError:
+    data_store = None
+
+try:
     import openpyxl
 except ImportError:
     openpyxl = None
@@ -255,6 +260,8 @@ def analyze(records, platform, out_dir, unit=""):
     os.makedirs(out_dir, exist_ok=True)
     total = len(records)
     total_cost = sum(r["cost"] for r in records)
+    total_cost_rmb = data_store.to_rmb(platform, total_cost) if data_store else round(total_cost, 2)
+    total_credits = round(sum(to_float(r.get("credits")) for r in records), 2)
     free = sum(1 for r in records if r["free"])
     paid = total - free
 
@@ -306,12 +313,16 @@ def analyze(records, platform, out_dir, unit=""):
                                 day_labels, day_n, day_free, day_paid, day_cost,
                                 model_counter, model_cost, task_counter,
                                 dmin=dmin, dmax=dmax,
-                                by_account=by_account if len(by_account) > 1 else None)
+                                by_account=by_account if len(by_account) > 1 else None,
+                                total_cost_rmb=total_cost_rmb,
+                                total_credits=total_credits)
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(md)
     return {
         "total": total, "free": free, "paid": paid,
-        "total_cost": round(total_cost, 2), "out": out_dir,
+        "total_cost": round(total_cost, 2), "total_cost_rmb": total_cost_rmb,
+        "total_credits": total_credits,
+        "out": out_dir,
     }
 
 

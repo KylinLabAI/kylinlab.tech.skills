@@ -5,10 +5,9 @@ Reads all captured CSVs from the data store for each platform, runs the
 verify gate so incomplete captures are flagged, and emits a single Markdown
 summary with a per-platform comparison + daily trend + report links.
 
-IMPORTANT: cost units differ per platform and are NOT additive:
-  - qoder / deepseek : 美元 or 额度
-  - trae / codebuddy : 积分 (points)
-Do not sum across platforms.
+IMPORTANT: cost units differ per platform (Qoder/DeepSeek = RMB, TRAE/CodeBuddy = 积分),
+but configs/units.json converts 积分 -> RMB so a comparable cross-platform RMB total is shown.
+Per-platform native cost is NOT summed directly; only the RMB-converted figures are added.
 
 Usage:
   python3 cross_platform_report.py [--days 30] [--start 2026-07-13] [--end 2026-08-11]
@@ -36,13 +35,8 @@ LABEL = {
     "codebuddy": "CodeBuddy",
     "deepseek": "DeepSeek (开放平台)",
 }
-# cost unit note per platform (NOT additive across platforms!)
-UNIT = {
-    "qoder": "美元/额度",
-    "trae": "积分(points)",
-    "codebuddy": "积分/额度",
-    "deepseek": "美元",
-}
+# cost unit + RMB conversion are sourced from configs/units.json via data_store
+# (native units differ per platform; to_rmb() converts 积分 -> RMB for comparison).
 
 
 def _accounts_with_data(platform):
@@ -116,7 +110,9 @@ def main():
             stats[key] = dict(n=n, cost=round(cost, 2), free=free, paid=paid,
                               models=dict(sorted(models.items(),
                                                  key=lambda x: -x[1])[:5]),
-                              wdays=len(wdates), link=link)
+                              wdays=len(wdates), link=link,
+                              unit=data_store.platform_unit(p),
+                              cost_rmb=round(data_store.to_rmb(p, cost), 2))
             # run verify gate (best-effort, do not abort the whole summary)
             try:
                 errs, warns, _ = verify_data.verify(p, start, end, acc)
@@ -133,12 +129,23 @@ def main():
     def _esc(x):
         return str(x).replace("|", "\\|")
 
+    rate_trae = data_store.rmb_per_unit("trae")
+    rate_cb = data_store.rmb_per_unit("codebuddy")
     rows_cmp = "\n".join(
         f"| {_esc(_col(k))} | {stats[k]['n']} | {stats[k]['paid']} | "
-        f"{stats[k]['free']} | {stats[k]['cost']} {UNIT[k[0]]} | {stats[k]['wdays']} | "
+        f"{stats[k]['free']} | {stats[k]['cost']} {stats[k]['unit']} | "
+        f"{stats[k]['cost_rmb']} | {stats[k]['wdays']} | "
         f"{_esc(', '.join(f'{m} ({round(v,1)})' for m,v in stats[k]['models'].items()))} | "
         f"[打开报告]({stats[k]['link']}report.md) |"
         for k in cols
+    )
+    tot_n = sum(s['n'] for s in stats.values())
+    tot_paid = sum(s['paid'] for s in stats.values())
+    tot_free = sum(s['free'] for s in stats.values())
+    tot_rmb = round(sum(s['cost_rmb'] for s in stats.values()), 2)
+    rows_cmp += (
+        f"| **全平台折算合计** | {tot_n} | {tot_paid} | {tot_free} | "
+        f"—（单位不同） | **{tot_rmb}** | — | — | — |\n"
     )
 
     verify_notes = "\n".join(
@@ -160,9 +167,10 @@ def main():
 
     md = f"""# AI 平台使用统计 · 汇总（{start} ~ {end}）
 
-> **单位说明：** 各平台费用单位不同且**不可直接相加**——
-> Qoder/DeepSeek 为美元/额度，TRAE/CodeBuddy 为积分(points)。
-> 跨平台比较请使用「请求数 / 活跃天数」等无量纲指标。
+> **单位说明：** 各平台原生费用单位不同（Qoder/DeepSeek 为人民币；TRAE/CodeBuddy 为积分），
+> 本表「折算费用(RMB)」按 `configs/units.json` 的折算率把积分换算成人民币以便跨平台比较：
+> TRAE {rate_trae}/积分（89RMB/4000积分），CodeBuddy {rate_cb}/积分（99RMB/4000积分）。
+> 末行「全平台折算合计」即为可比的人民币总费用。
 > 数据来自本地已抓取缓存，未做外发。
 
 ## 数据完整性校验
@@ -173,8 +181,8 @@ def main():
 
 ## 平台 / 账号对比
 
-| 平台 · 账号 | 总请求 | 付费 | 免费 | 总费用(单位见各列) | 窗口内活跃天数 | Top 模型（费用） | 独立报告 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
+| 平台 · 账号 | 总请求 | 付费 | 免费 | 总费用(单位见各列) | 折算费用(RMB) | 窗口内活跃天数 | Top 模型（费用） | 独立报告 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {rows_cmp}
 
 ## 每日费用趋势（按平台 · 账号，单位各自独立）

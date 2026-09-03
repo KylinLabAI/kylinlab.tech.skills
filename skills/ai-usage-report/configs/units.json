@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "note": "每平台费用单位与人民币折算率。store 中的 cost 为各平台原生单位（人民币 或 积分）；rmb_per_unit 用于把积分折算成人民币，以实现跨平台可比的总费用。",
+  "platforms": {
+    "qoder":     { "unit": "人民币(RMB)", "rmb_per_unit": 1.0,     "detail": "费用(¥参考费)；另含积分字段未单列" },
+    "deepseek":  { "unit": "人民币(RMB)", "rmb_per_unit": 1.0,     "detail": "费用(CNY)" },
+    "trae":      { "unit": "积分(points)", "rmb_per_unit": 0.02225, "detail": "89 RMB / 4000 积分" },
+    "codebuddy": { "unit": "积分(points)", "rmb_per_unit": 0.02475, "detail": "99 RMB / 4000 积分" }
+  }
+}

@@ -568,6 +568,24 @@ def _coerce_record(rec, platform):
         prompt = (rec.get("prompt") or rec.get("userPrompt") or rec.get("title"))
         type_field = ""
 
+    # Capture native credits/积分 where the platform supplies them. Qoder
+    # returns BOTH 费用(RMB) and 积分, so its 积分 is preserved here as a
+    # separate `credits` column while `cost` stays the RMB 费用. TRAE/CodeBuddy
+    # supply 积分 only; DeepSeek supplies neither.
+    credits_raw = None
+    if p == "qoder":
+        credits_raw = _first(rec, ("credits", "credit", "consumed_credits",
+                                   "used_credits", "credit_used", "points",
+                                   "积分", "积分消耗"))
+    elif p in ("trae", "trae-cn"):
+        credits_raw = _first(rec, ("credits_float", "credits", "credit", "积分"))
+    elif p == "codebuddy":
+        credits_raw = _first(rec, ("credit", "credits", "积分消耗", "points"))
+    try:
+        credits = float(str(credits_raw).replace(",", "")) if credits_raw not in (None, "") else None
+    except Exception:
+        credits = None
+
     dt = _parse_dt(dt_raw)
 
     # unique request/session id, when the platform provides one (used to keep
@@ -595,6 +613,7 @@ def _coerce_record(rec, platform):
         "free": bool(free), "prompt": str(prompt or ""), "platform": platform,
         # Filled in by capture() once the caller's --account is known.
         "account": "",
+        "credits": credits if credits is not None else "",
         "request_id": str(rid) if rid else "",
     }
 
@@ -1212,6 +1231,26 @@ def _ingest_deepseek(url, payload, state):
     print(f"[deepseek] merged -> {n} daily×model rows (cost={is_cost})")
 
 
+def _save_raw_snapshot(state, platform, url, payload):
+    """Save one raw API response as JSON into the per-account raw/ folder.
+
+    Called from the central `on_response` interceptor, so it runs for every
+    platform and every paginated request. Files are named per request so the
+    original payload is preserved verbatim for later re-analysis.
+    """
+    seq = state.get("_raw_seq", 0) + 1
+    state["_raw_seq"] = seq
+    hint = url.split("?")[0].rstrip("/").split("/")[-1] or "resp"
+    label = f"{seq:03d}_{hint}"
+    try:
+        p = data_store.save_raw_response(
+            platform, state.get("account"), state.get("start"),
+            state.get("end"), payload, label, url=url)
+        print(f"[raw] snapshot -> {p}")
+    except Exception as e:
+        print(f"[raw] save failed: {e}")
+
+
 def capture(platform, usage_url, login_url=None, keyword=None,
             scroll=20, headless=False, profile_dir=None,
             start=None, end=None, account=None, label=None):
@@ -1220,7 +1259,7 @@ def capture(platform, usage_url, login_url=None, keyword=None,
     kw = keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage")
     profile_dir = profile_dir or _default_profile_dir(platform, account)
     os.makedirs(profile_dir, exist_ok=True)
-    state = {"collected": [], "start": start, "end": end}
+    state = {"collected": [], "start": start, "end": end, "account": account, "_raw_seq": 0}
     _fresh_auth = {"value": None}
 
     def on_request(req):
@@ -1240,6 +1279,9 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                 payload = resp.json()
             except Exception:
                 return
+            # Persist the original API payload verbatim (one snapshot per
+            # request) so we can re-analyze later without losing any field.
+            _save_raw_snapshot(state, platform, url, payload)
             if platform.lower() == "deepseek":
                 # DeepSeek returns daily×model aggregated buckets, not a
                 # per-request list. Merge amount + cost responses.
@@ -1288,13 +1330,14 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                     if _fresh_auth["value"]:
                         spec.setdefault("headers", {})["authorization"] = \
                             _fresh_auth["value"]
+                    # Resolve the masked account name now (logged-in, same-origin)
+                    # so per-request raw snapshots land in the correct folder.
+                    data_label = _resolve_data_label(page, platform, account, label)
+                    state["account"] = data_label
                 api_records = _capture_via_api(platform, page, start, end)
                 if api_records:
                     print(f"[api] auto-downloaded {len(api_records)} records "
                           f"via API (no manual login / download).")
-                    # Learn the real (masked) account name from the profile page
-                    # while we're still on a same-origin, logged-in page.
-                    data_label = _resolve_data_label(page, platform, account, label)
                     for r in api_records:
                         r["account"] = data_label
                     context.close()
@@ -1341,6 +1384,11 @@ def capture(platform, usage_url, login_url=None, keyword=None,
             print("[warn] load state timeout; continuing anyway.")
         # Wait for manual login + data; never closes browser prematurely.
         _wait_for_login_and_data()
+        # Resolve the masked account name now (logged-in, same-origin) so the
+        # per-request raw snapshots captured during date-range/pagination land
+        # in the correct account folder.
+        data_label = _resolve_data_label(page, platform, account, label)
+        state["account"] = data_label
         # give SPA a moment to fire the usage API after redirect
         page.wait_for_timeout(5000)
         for _ in range(scroll):
@@ -1355,9 +1403,6 @@ def capture(platform, usage_url, login_url=None, keyword=None,
         if platform.lower() == "trae":
             _fetch_trae_all_pages(page, state, platform)
 
-        # Still logged in + on a same-origin page: read the real (masked)
-        # account name from the profile page before we close the session.
-        data_label = _resolve_data_label(page, platform, account, label)
         context.close()
 
     records = state["collected"]
@@ -1540,6 +1585,10 @@ def _fetch_qoder_api_pages(page, state, start_ms, end_ms):
 
         records = _extract_list(payload)
         if records:
+            # DEBUG: confirm which native fields the API actually exposes,
+            # especially whether a 积分/credits key is present (Qoder returns
+            # both 费用(RMB) and 积分 per the web UI).
+            print(f"[qoder-api] sample item keys: {sorted(records[0].keys())}")
             norm = [_coerce_record(r, "qoder") for r in records]
             state["collected"].extend(norm)
             total_fetched += len(norm)

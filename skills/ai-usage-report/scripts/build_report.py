@@ -219,10 +219,7 @@ def main():
         print("[build] ⚠ 校验有警告，仍会生成报告（请人工确认）。\n")
 
     # cost unit reminder for cross-platform work
-    unit = {
-        "qoder": "美元/额度", "trae": "积分(points)",
-        "codebuddy": "积分/额度", "deepseek": "美元",
-    }.get(platform.lower(), "未知")
+    unit = data_store.platform_unit(platform)
     label = platform if not account else (
         f"{platform} (all accounts)" if all_accounts else f"{platform}/{account}")
     print(f"[build] 平台 {label} 费用单位：{unit}"

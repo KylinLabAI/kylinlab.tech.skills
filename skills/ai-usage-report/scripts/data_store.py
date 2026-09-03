@@ -36,7 +36,7 @@ directly under the platform folder:
 multi-account support keeps working unchanged.
 
 Normalized record schema (same as the scraper / analyzer):
-    date, model, cost, free, prompt, platform, account, requests
+    date, model, cost, free, prompt, platform, account, requests, request_id, row_id, credits
 
 Public API
 ----------
@@ -60,6 +60,7 @@ Public API
 import calendar
 import csv
 import hashlib
+import json
 import os
 import re
 from datetime import date, datetime
@@ -86,6 +87,50 @@ def _load_user_config():
 _CONFIG = _load_user_config()
 
 
+# ---- cost unit + RMB conversion (configs/units.json) ---------------------
+# Each platform stores `cost` in its NATIVE unit (RMB or 积分). This table
+# converts积分-bearing platforms into RMB so cross-platform totals are comparable.
+_UNITS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "configs", "units.json",
+)
+_UNITS_CACHE = None
+
+
+def units_config():
+    """Load configs/units.json (per-platform cost unit + RMB conversion rate)."""
+    global _UNITS_CACHE
+    if _UNITS_CACHE is None:
+        _UNITS_CACHE = {}
+        if os.path.exists(_UNITS_PATH):
+            try:
+                with open(_UNITS_PATH, encoding="utf-8") as f:
+                    _UNITS_CACHE = json.load(f)
+            except Exception:
+                _UNITS_CACHE = {}
+    return _UNITS_CACHE
+
+
+def platform_unit(platform):
+    """Human unit label for a platform, e.g. '人民币(RMB)' / '积分(points)'."""
+    cfg = units_config().get("platforms", {}).get((platform or "").lower(), {})
+    return cfg.get("unit", "未知")
+
+
+def rmb_per_unit(platform):
+    """Multiplier converting one native cost unit into RMB (1.0 for RMB platforms)."""
+    cfg = units_config().get("platforms", {}).get((platform or "").lower(), {})
+    try:
+        return float(cfg.get("rmb_per_unit", 1.0))
+    except Exception:
+        return 1.0
+
+
+def to_rmb(platform, cost):
+    """Convert a native-unit cost into RMB using the platform's rate."""
+    return round(float(cost or 0) * rmb_per_unit(platform), 2)
+
+
 def get_root():
     """Resolve the output root.
 
@@ -104,7 +149,7 @@ def get_root():
 
 ROOT = get_root()
 FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "account",
-          "requests", "request_id", "row_id"]
+          "requests", "request_id", "row_id", "credits"]
 DATE_FMT = "%Y-%m-%d"
 # Named accounts live under data/<platform>/<account>/ (one folder per account).
 # The default (unnamed) account is the platform folder itself, so data captured
@@ -231,6 +276,53 @@ def save_raw_capture(platform, account, start, end, records):
         w.writeheader()
         w.writerows(records)
     return out
+
+
+def save_raw_response(platform, account, start, end, payload, label, url=None):
+    """Persist ONE raw API response as JSON for later re-analysis.
+
+    Unlike save_raw_capture (which stores the *normalized* rows as CSV), this
+    keeps the *original* platform payload verbatim — every field the API
+    returned (费用, 积分, tokens, everything) — so we can re-parse it later
+    without losing data. One file per request; `label` disambiguates requests
+    that share the same (start, end) window (e.g. pagination pages).
+
+    Layout: data/<platform>/<account>/raw/<start>_<end>_<label>.json
+    """
+    import re as _re
+    from datetime import date as _date, datetime as _dt
+    d = raw_capture_dir(platform, account)
+    os.makedirs(d, exist_ok=True)
+
+    def _fmt(x):
+        if isinstance(x, _date):
+            return x.strftime("%Y-%m-%d")
+        if x is None:
+            return "na"
+        return str(x)
+
+    s, e = _fmt(start), _fmt(end)
+    lbl = _re.sub(r"[^A-Za-z0-9._-]+", "-", str(label)).strip("-") or "req"
+    base = os.path.join(d, f"{s}_{e}_{lbl}.json")
+    # Never overwrite an existing snapshot of the same request; bump a suffix.
+    path = base
+    if os.path.exists(path):
+        i = 1
+        while os.path.exists(os.path.join(d, f"{s}_{e}_{lbl}.{i}.json")):
+            i += 1
+        path = os.path.join(d, f"{s}_{e}_{lbl}.{i}.json")
+    envelope = {
+        "_meta": {
+            "platform": (platform or "").lower(),
+            "account": account or "",
+            "captured_at": _dt.now().isoformat(timespec="seconds"),
+            "start": s, "end": e, "label": lbl, "url": url or "",
+        },
+        "payload": payload,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(envelope, f, ensure_ascii=False, indent=2)
+    return path
 
 
 def _dir_has_csv(d):
@@ -440,9 +532,16 @@ def _row_id(r):
 def _more_complete(a, b):
     """True if row `a` is a better copy than `b` for the same logical row.
 
-    Preference: non-empty prompt > higher cost > longer prompt. Used when a day
-    is re-fetched and we must choose one copy to keep (backfill wins).
+    Preference: non-empty credits(积分) > non-empty prompt > higher cost >
+    longer prompt. Used when a day is re-fetched and we must choose one copy
+    to keep — a re-fetch that finally captured 积分 must win over the older
+    credit-less copy, otherwise 积分 never backfills.
     """
+    def _has_credits(x):
+        v = x.get("credits")
+        return v not in (None, "", 0, 0.0) and str(v).strip() not in ("", "0", "0.0")
+    if _has_credits(a) != _has_credits(b):
+        return _has_credits(a)
     pa, pb = (a.get("prompt", "") or ""), (b.get("prompt", "") or "")
     if bool(pa) != bool(pb):
         return bool(pa)

@@ -136,10 +136,7 @@ def verify(platform, req_start=None, req_end=None, account=None):
             warnings.append(f"空文件：{os.path.basename(path)}")
 
     # summary line
-    cost_unit = {
-        "qoder": "美元/额度", "trae": "积分(points)",
-        "codebuddy": "积分/额度", "deepseek": "美元",
-    }.get(platform.lower(), "未知")
+    cost_unit = data_store.platform_unit(platform)
     source_note = "(export)" if export_based else "(scraped)"
     print(f"[verify] {label}: {len(rows)} 条 {source_note}, "
           f"覆盖 {min(have)}~{max(have)}, 单位={cost_unit}")

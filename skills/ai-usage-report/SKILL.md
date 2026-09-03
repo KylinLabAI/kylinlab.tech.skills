@@ -334,9 +334,23 @@ python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11 --out 2026-
 
 ## Notes / assumptions
 
-- **Cost units differ per platform and must NOT be summed across platforms**:
-  CodeBuddy/TRAE report 积分 (points); Qoder/DeepSeek report 人民币/额度 (CNY/RMB).
-  The cross-platform summary only compares request counts / active days / model mix.
+- **Cost units differ per platform, but are convertible to RMB** via
+  `configs/units.json` (per-platform `rmb_per_unit`): TRAE = 89 RMB / 4000 积分,
+  CodeBuddy = 99 RMB / 4000 积分; Qoder/DeepSeek are already RMB. The cross-platform
+  summary shows a **折算费用(RMB)** column + **全平台折算合计** row for a comparable total;
+  each per-platform report also shows its own 折算费用(RMB). Edit `units.json` to change rates.
+- **Qoder supplies BOTH 费用(RMB) and 积分**: the normalized record stores `cost` = 费用(RMB)
+  (used for the RMB-comparable total) and a separate `credits` column = 积分 (shown in the
+  per-platform report, but NOT cross-platform additive). TRAE/CodeBuddy store 积分 as `cost`
+  (and also in `credits`); DeepSeek has neither.
+- **Raw API payloads are archived per request** under
+  `data/<platform>/<account>/raw/<start>_<end>_<NNN>_<endpoint>.json`
+  (envelope: `_meta` + `payload`). Unlike the normalized CSV, these keep the
+  *original* platform response verbatim — every field the API returned (费用,
+  积分, tokens, …) — so you can re-analyze later (e.g. recover 积分 that older
+  normalized CSVs dropped) without re-scraping. Saving happens in the central
+  `on_response` interceptor, so it covers every platform and every paginated
+  request; identical request files get a `.N` suffix instead of being overwritten.
 - If the export has only a single cost column (no discount info), the report
   treats 打折前 = 打折后 = cost. "免费" = cost 0 (or `wallet_type=free` /
   `free=true`); "付费" = cost > 0.
