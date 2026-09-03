@@ -16,14 +16,25 @@ How to clean up useless files and folders on macOS safely. Prefer built-in OS to
 
 ## Safe To Clean (Regenerable)
 
-These are scanned by the bundled helper under the `safe` profile:
+These are scanned by the bundled helper under the `safe` profile. The helper is
+**app-aware**, so it never runs a blanket `rm -rf ~/Library/Caches/*`:
 
-- `$TMPDIR` — current user's temporary directory.
-- `~/Library/Caches` — per-user application caches (regenerate on demand).
-- `~/Library/Containers/*/Data/Library/Caches` — sandboxed app caches.
-- `~/Library/Logs` — per-user logs.
-- `~/Library/Application Support/CrashReporter` — crash reports.
-- `~/Library/DiagnosticReports` — diagnostic reports.
+- `~/Library/Caches` — per-user application caches.
+  - **Orphan subfolders** (the cache's owning app is no longer installed) are
+    removed in full — they can never regenerate, so they are pure junk. This is
+    usually the biggest silent reclaim from apps you uninstalled long ago.
+  - Subfolders whose app is **still installed** keep only files older than the
+    age threshold (default 7 days); recent cache is preserved so the app keeps working.
+  - Folders whose name can't be matched to an installed app are skipped, never deleted.
+- `~/Library/Containers` — sandboxed-app containers.
+  - **Whole containers of uninstalled apps** are removed (per Apple guidance,
+    leftover data from uninstalled apps is safe to delete).
+  - Containers of still-installed apps are left untouched — they may hold user data.
+- `~/Library/Logs` — per-user logs. Only entries **older than 7 days** are
+  removed; recent logs are always kept (the helper never does `rm -rf ~/Library/Logs/*`).
+- `~/Library/Application Support/CrashReporter` — crash reports (age-limited).
+- `~/Library/DiagnosticReports` — diagnostic reports (age-limited).
+- `$TMPDIR` — current user's temporary directory (age-limited).
 
 ## Developer Caches
 
@@ -112,6 +123,44 @@ Anti-patterns seen in unsafe cleanup scripts online — never run these:
 - `rm -rf ~/Library/Preferences/*.plist` — resets every app's settings, including still-installed ones.
 - `rm -rf ~/Library/Saved\ Application\ State/*` — discards app autosave state.
 - Third-party "cleaner/optimizer" apps: Apple Communities guidance is that they generally do more harm than good; prefer built-in tools and targeted, reviewed cleanup.
+
+## Login & Session Safety (cookies, keychain, tokens)
+
+The fear with aggressive cleanup is being logged out everywhere on a machine you
+just set up. Understanding *where* session state lives shows why the scan above
+is safe:
+
+- **Cookies / website logins** live in `~/Library/Cookies` and per-app
+  `~/Library/Containers/<id>/Data/Library/Cookies`, and browsers keep their own
+  under `~/Library/Application Support/<browser>/.../Cookies` (a SQLite DB).
+  They are **not** under `~/Library/Caches`, so deleting caches never logs you
+  out of websites.
+- **Passwords and many "remember me" tokens** live in **Keychain**
+  (`~/Library/Keychains`) and iCloud Keychain — untouched by any cleanup here.
+- **App sign-in state** (e.g. Slack, Spotify, mail accounts) is stored in
+  `~/Library/Application Support/<app>` or inside an installed app's
+  `~/Library/Containers/<id>/Data/Library` — not in Caches.
+
+What the helper actually touches, and why it preserves sessions:
+
+- `~/Library/Caches` — orphan subfolders (app uninstalled) removed; still-installed
+  apps keep only age-thresholded files. **No cookies, keychain, or tokens here.**
+- `~/Library/Logs` — age-limited. **No session data here.**
+- `~/Library/Containers` — **only whole containers of uninstalled apps** are
+  removed (the app and its login state are already gone). Containers of
+  still-installed apps are never touched, so their cookies/tokens survive.
+
+Because of this, running the helper on a freshly set-up laptop is low-risk:
+caches are recent (kept by the 7-day rule) and there are few or no orphans, so
+you will not be forced to re-authenticate.
+
+Extra precautions worth recommending to the user:
+- Before any first-time or "new laptop" cleanup, make sure Keychain and any
+  needed browser profiles are backed up / synced (iCloud Keychain, browser sync).
+- Never add `~/Library/Cookies`, `~/Library/Keychains`, `~/Library/Application
+  Support`, or `~/Library/Preferences` to a cleanup target.
+- If an app must keep its session across a manual clear, quit it first and let it
+  re-cache; logins are not stored in Caches, so this is about convenience, not auth.
 
 ## Vendor References
 

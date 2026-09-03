@@ -44,22 +44,29 @@ default **`~/Desktop/ai-usage-report`**):
 ```
 ~/Desktop/ai-usage-report/
 ├── data/<platform>/
-│   ├── raw/                              # default account exports (.xlsx/.zip/.csv)
-│   ├── <start>_<end>.csv                 # default account normalized captures
-│   └── accounts/<account>/              # ONE self-contained folder per account
-│       ├── raw/                          # that account's exports
-│       └── <start>_<end>.csv             # that account's normalized captures
-└── report/<platform>/
-    ├── <start>_<end>/                     # default account report
-    ├── accounts/<account>/<start>_<end>/  # per-account report
-    └── _all/<start>_<end>/                # aggregate report (every account)
+│   ├── raw/                              # default account: per-request RAW snapshots
+│   ├── <YYYY-MM>.csv                     # default account, ONE FILE PER MONTH
+│   └── <account>/                        # ONE self-contained folder per account
+│       ├── raw/                          # that account's per-request RAW snapshots
+│       └── <YYYY-MM>.csv                 # that account's monthly captures
+└── report/<start>_<end>/                 # ONE folder per request range
+    ├── <platform>/                        # per-vendor report
+    ├── <platform>/<account>/              # per-account report (optional)
+    ├── <platform>/_all/                   # vendor report across its accounts
+    └── summary/                           # cross-vendor combined report
 ```
 
 The default (unnamed) account is the platform folder itself, so data captured
 **before** multi-account support keeps working unchanged.
 
-Each capture file is named after the date range it covers
-(e.g. `data/qoder/2026-08-01_2026-08-15.csv`). This lets the skill:
+Captured data is stored as **ONE FILE PER CALENDAR MONTH** (e.g.
+`data/qoder/2026-08.csv`), independent of whatever date range you request:
+
+- A request that spans months (8/15~9/10) updates several monthly files
+  (2026-08.csv **and** 2026-09.csv).
+- A partial request (8/10~8/20) simply merges into the existing 2026-08.csv.
+
+This lets the skill:
 
 - **Reuse**: if a user later asks for a range already fully cached, no fetch
   happens — `build_report.py` just reads the CSVs.
@@ -72,6 +79,20 @@ Each capture file is named after the date range it covers
 - **Isolation**: every account is a fully separate store — its raw exports,
   captures, coverage gaps, and report never touch another account, so three
   CodeBuddy accounts never overwrite or silently merge into each other.
+
+**Per-request RAW snapshot.** Every `scrape_usage.py` run also writes an
+*un-merged, un-deduped* copy of what it captured that run, one CSV per request:
+
+```
+data/<platform>/raw/<start>_<end>.csv          # default account
+data/<platform>/<account>/raw/<start>_<end>.csv # named account
+```
+
+The file is named by the range actually fetched, so **overlapping requests each
+keep their own snapshot** (e.g. 8/15~9/1 and 8/20~9/10 produce two files). These
+snapshots are kept purely for troubleshooting and recovery — they never feed the
+monthly store or the reports, and the `raw/` folder is excluded from account
+enumeration.
 
 ```bash
 # First fetch (writes data/qoder/2026-08-01_2026-08-15.csv)
@@ -99,15 +120,20 @@ logins), the accounts must stay isolated — mixing them would make rows from
 different accounts indistinguishable, and the dedup logic would collapse
 same-day/same-model rows into one, silently under-counting usage.
 
-Each account gets its own mirror of the platform folder
-(`data/<platform>/accounts/<account>/` + `report/<platform>/accounts/<account>/`),
+Each account gets its own folder under the platform
+(`data/<platform>/<account>/` + per-request `report/<start>_<end>/<platform>/<account>/`),
 and `account` is part of the dedup identity, so accounts never overwrite or
 merge into each other. The default (unnamed) store stays at `data/<platform>/`
 for backwards compatibility.
 
-- **Capture** — pass `--account <label>` to `scrape_usage.py`. It uses a separate
-  persistent Chrome profile per account (one login session per profile), so you
-  are never forced to log out of one account to scrape another.
+- **Capture** — pass `--account <label>` to `scrape_usage.py` to pick the
+  persistent Chrome **cookie/login profile** (use a placeholder like `account_1`,
+  `account_2` for multiple accounts — the value is only a cookie selector). After
+  login, the script reads the real account name from the platform's profile page,
+  **masks it** (e.g. `王小二` → `王x二`, `13800000001` → `13xxxxxxx01`), and stores
+  the data under `data/<platform>/<masked-name>/` — not under the placeholder. So
+  history is keyed on a (privacy-protected) real person, and any legacy placeholder
+  folder (`auto_1`, etc.) is migrated into the masked folder automatically.
 - **Normalize** — exports go in the matching `accounts/<account>/raw/` folder.
   `normalize.py` (no args) normalizes **every** account; `normalize.py --account
   <label>` restricts to one.
@@ -115,7 +141,7 @@ for backwards compatibility.
   every account of a platform.
 - **Report** — `build_report.py --account <label>` for one account, or
   `--account all` to aggregate **all** accounts into
-  `report/<platform>/_all/<s>_<e>/` with a per-account breakdown table. With no
+  `report/<s>_<e>/<platform>/_all/` with a per-account breakdown table. With no
   `--account`, `build_report.py` reports the default store and prints a hint
   listing any other accounts it found.
 - **Cross-platform summary** — `cross_platform_report.py` lists each
@@ -123,12 +149,13 @@ for backwards compatibility.
   behind another account's rows.
 
 ```bash
-# Capture each account into its own store
-python3 scrape_usage.py --platform codebuddy --account work  --url <url> --start 2026-08-01 --end 2026-08-31
-python3 scrape_usage.py --platform codebuddy --account personal --url <url> --start 2026-08-01 --end 2026-08-31
+# Capture each account into its own cookie profile (placeholder label).
+# The on-disk data folder is named after the auto-detected, MASKED real name.
+python3 scrape_usage.py --platform codebuddy --account account_1 --url <url> --start 2026-08-01 --end 2026-08-31
+python3 scrape_usage.py --platform codebuddy --account account_2 --url <url> --start 2026-08-01 --end 2026-08-31
 
-# Report them separately, or aggregate
-python3 build_report.py --platform codebuddy --account work --start 2026-08-01 --end 2026-08-31
+# Report them separately, or aggregate. Pass the MASKED name (or `all`).
+python3 build_report.py --platform codebuddy --account 王x二 --start 2026-08-01 --end 2026-08-31
 python3 build_report.py --platform codebuddy --account all --start 2026-08-01 --end 2026-08-31
 ```
 
@@ -168,11 +195,11 @@ Afterwards `--account all` reports every account with no further logins.
 ## Unified data flow
 
 ```
-Platform web portal  ──(scrape_usage.py --start/--end [--account A])──► data/<p>/accounts/<A>/<s>_<e>.csv
-CodeBuddy .xlsx  ──► data/<p>/accounts/<A>/raw/ ──(normalize.py)──► data/<p>/accounts/<A>/<s>_<e>.csv
-DeepSeek  .zip   ──► data/<p>/accounts/<A>/raw/ ──(normalize.py)──► data/<p>/accounts/<A>/<s>_<e>.csv
-data/<p>/.../*.csv ──(build_report.py [--account A|all])──► report/<p>/[accounts/<A>/|_all/]<s>_<e>/report.html
-all platforms    ──(cross_platform_report.py)──► report/_combined/<s>_<e>/summary.html
+Platform web portal  ──(scrape_usage.py --start/--end [--account A])──► data/<p>/[<A>/]<YYYY-MM>.csv
+CodeBuddy .xlsx  ──► data/<p>/[<A>/]raw/ ──(normalize.py)──► data/<p>/[<A>/]<YYYY-MM>.csv
+DeepSeek  .zip   ──► data/<p>/[<A>/]raw/ ──(normalize.py)──► data/<p>/[<A>/]<YYYY-MM>.csv
+data/<p>/.../<YYYY-MM>.csv ──(build_report.py [--account A|all])──► report/<p>/[<A>/|_all/]<s>_<e>/report.html
+all platforms    ──(cross_platform_report.py)──► report/<s>_<e>/summary/summary.html
 ```
 
 ## Supported inputs (analyze_usage.py, auto-detected by filename + content)
@@ -288,7 +315,7 @@ python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
 ```
 
 - `--out DIR`  : output folder (**default `~/Desktop/<input>_report`** for
-  one-shot; `~/Desktop/ai-usage-report/report/<platform>/<s>_<e>/` for store)
+  one-shot; `~/Desktop/ai-usage-report/report/<s>_<e>/<platform>/` for store)
 - `--platform`: force a platform label when auto-detect is ambiguous
 
 ## Output

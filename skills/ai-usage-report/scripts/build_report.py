@@ -2,17 +2,19 @@
 """
 build_report.py — Build an analysis report from cached usage data.
 
-Reads all captured CSVs for a platform from data/<platform>/ (managed by
-data_store.py), merges them, and runs the full analysis pipeline
-(analyze_usage.analyze) to produce a report in report/<platform>.
+Reads all captured CSVs for a platform from data/<platform>/<account>/
+(managed by data_store.py), merges them, and runs the full analysis pipeline
+(analyze_usage.analyze) to produce a report under
+report/<start>_<end>/<platform>/  (one folder per request range).
 
 If a date range is requested and some days are missing, it can auto-trigger
 scrape_usage.py to fill the gaps first (incremental fetch).
 
 Multi-account: a platform can hold several accounts, each with its own folder
-(data/<platform>/accounts/<account>/). Pick one with `--account <name>`, or
-pass `--account all` to aggregate every account into a single report (with a
-per-account breakdown table).
+(data/<platform>/<account>/). Pick one with `--account <name>` (report at
+report/<start>_<end>/<platform>/<account>/), or pass `--account all` to
+aggregate every account into a single vendor report
+(report/<start>_<end>/<platform>/_all/).
 
 Usage:
     python3 build_report.py --platform qoder [--start 2026-08-01] [--end 2026-08-15]
@@ -222,16 +224,17 @@ def main():
     print(f"[build] 平台 {label} 费用单位：{unit}"
           f"（不同平台单位不可直接相加）")
 
-    # build the report under report/<platform>[/accounts/<acc>]/<start>_<end>
+    # build the report under report/<start>_<end>/<platform>[/<account>]
     s = req_start or min(datetime.strptime(r["date"], "%Y-%m-%d").date()
                          for r in rows if r.get("date"))
     e = req_end or max(datetime.strptime(r["date"], "%Y-%m-%d").date()
                        for r in rows if r.get("date"))
     if all_accounts:
-        base = os.path.join(data_store.platform_report_dir(platform), "_all")
+        out_dir = data_store.platform_report_dir(platform, "_all", s, e)
+    elif account:
+        out_dir = data_store.platform_report_dir(platform, account, s, e)
     else:
-        base = data_store.platform_report_dir(platform, account)
-    out_dir = os.path.join(base, f"{s.strftime('%Y-%m-%d')}_{e.strftime('%Y-%m-%d')}")
+        out_dir = data_store.platform_report_dir(platform, None, s, e)
     summary = analyze.analyze(rows, platform, out_dir)
     print(f"[build] platform={label} range={s}~{e}")
     print(f"        records={summary['total']} cost={summary['total_cost']}")

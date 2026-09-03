@@ -24,6 +24,7 @@ from cleanup_common import (
     resolve_pattern,
     scan_old_children,
     scan_old_files,
+    scan_orphan,
 )
 
 
@@ -70,6 +71,9 @@ def run(args: argparse.Namespace) -> CleanupReport:
                 seen_roots.add(key)
                 if target.mode == "old-children":
                     reports.append(scan_old_children(root, target, cutoff, args.apply))
+                elif target.mode in ("orphan-caches", "orphan-folders"):
+                    clean_by_age = target.mode == "orphan-caches"
+                    reports.append(scan_orphan(root, target, cutoff, args.apply, clean_by_age))
                 else:
                     reports.append(scan_old_files(root, target, cutoff, args.apply))
 
@@ -119,7 +123,8 @@ def print_report(report: CleanupReport) -> None:
             f"- {item.key}: {human_size(item.bytes_reclaimable)}, "
             f"files={item.files_matched}, items={item.items_matched}, "
             f"recent_skipped={item.skipped_recent}, symlink_skipped={item.skipped_symlink}, "
-            f"root={item.root} ({status})"
+            f"orphans={item.orphans_removed}, unknown_skipped={item.skipped_unknown}, "
+            f"kept_installed={item.skipped_kept}, root={item.root} ({status})"
         )
         for error in item.errors[:8]:
             print(f"  error: {error}")

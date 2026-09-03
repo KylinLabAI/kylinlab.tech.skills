@@ -59,6 +59,18 @@ Use conservative levels. Do not jump to broad deletion just because the disk is 
 
 Run without extra include flags. This covers user temp folders, user caches, app logs, crash reports, and browser/system cache folders that are safe to regenerate.
 
+Cache cleanup is **app-aware and safe by construction** — it never does a blanket
+`rm -rf ~/Library/Caches/*`:
+
+- **Orphan caches** (a cache/container folder whose owning app is no longer
+  installed) are removed in full. These can never regenerate, so they are pure
+  junk — this is usually the biggest silent reclaim from long-ago uninstalled apps.
+- **Caches of still-installed apps** keep only files older than the age threshold
+  (default 7 days); recent cache is left so the app doesn't misbehave.
+- **Logs** keep only entries older than 7 days (`--min-age-days 7` default); the
+  helper never deletes recent logs or does `rm -rf ~/Library/Logs/*`.
+- Folders whose name can't be matched to an installed app are skipped, not deleted.
+
 ```bash
 python3 ./scripts/storage_cleanup.py --min-age-days 7
 python3 ./scripts/storage_cleanup.py --min-age-days 7 --apply
@@ -120,9 +132,11 @@ For OS-specific trash/recycle handling (Storage Sense on Windows, Trash on macOS
 ## Safety Rules
 
 - Always run dry-run first unless the user already gave a precise delete command.
-- Never use broad commands such as `rm -rf ~/Library/*`, `rm -rf %LOCALAPPDATA%`, `rm -rf ~/.cache/*`, `del /s C:\Windows\Temp`, or recursive delete from a drive root.
+- Never use broad commands such as `rm -rf ~/Library/Caches/*`, `rm -rf ~/Library/*`, `rm -rf %LOCALAPPDATA%`, `rm -rf ~/.cache/*`, `del /s C:\Windows\Temp`, or recursive delete from a drive root.
+- macOS cache cleanup is app-aware: only **orphan** cache/container folders (whose app is no longer installed) are removed entirely. Caches of still-installed apps are never bulk-removed — only files older than the age threshold are cleaned.
+- Login/session safety: cookies (`~/Library/Cookies`, browser `Application Support`), Keychain (`~/Library/Keychains`), and app sign-in tokens (`~/Library/Application Support`, installed `Containers`) are never touched. Deleting `~/Library/Caches` does **not** log the user out. On a freshly set-up laptop, caches are recent (kept by the 7-day rule) and orphans are rare, so cleanup will not force re-authentication.
 - Do not follow symlinks or junctions while cleaning.
-- Avoid deleting files modified recently; default to 7 days for OS temp/cache and 30 days for package caches or trash.
+- Avoid deleting files modified recently; default to 7 days for OS temp/cache/logs and 30 days for package caches or trash. Logs are limited to 7+ days and recent logs are always kept.
 - Treat cloud-synced folders, Downloads, Desktop, Documents, media libraries, virtual machines, databases, Docker volumes, and local Git worktrees as user data.
 - For Docker, avoid `--volumes` unless the user confirms containers do not rely on those volumes for data.
 

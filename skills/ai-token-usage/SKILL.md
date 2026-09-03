@@ -158,8 +158,13 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--current-session` | false | Show context usage for the current (most recent) Copilot, Codex, or Claude Code session |
 | `--session-file` | — | Path to a specific session JSONL file (with `--current-session`) |
 | `--currency` | CNY | Display currency for cost estimates: `USD`, `CNY`, or `RMB`. Default is CNY (RMB); the trend chart's cost panel is always RMB regardless. |
-| `--output-dir` | `~/Desktop/ai-token-usage` | Directory for the saved `.md` report + trend chart image (created if missing). |
+| `--output-dir` | `~/Desktop/ai-token-usage` | Target directory (created if missing). The data store and reports are both saved under this dir: `<output-dir>/data` and `<output-dir>/report/<timestamp>`. |
 | `--no-save` | false | Do not write the `.md` report / chart image; print only. |
+| `--data-dir` | `<output-dir>/data` | Persistent raw-data CSV store, co-located with the report under the target dir (NOT inside the skill). Merged across runs so history accumulates in `data/data.csv` + per-host/per-agent `data/<host>/<group>/data.csv`. |
+| `--host` | local hostname | Machine label written on local rows in the data store. Same `session_key` from two hosts stays distinct. |
+| `--import-data CSV [CSV ...]` | — | Merge one or more CSV files exported from OTHER machines into the store, then report across all machines. |
+| `--import-host` | — | Machine label for every row imported via `--import-data` (e.g. `windows`). Overrides the file's own host column. Defaults to the file's host column / filename. |
+| `--no-raw-data` | false | Do not update the persistent raw-data CSV store. |
 | `--exclude-free` | false | Price free-tier models at $0 instead of their paid base rate (billable-only view). Default counts free models at their standard rate. |
 | `--vscode-data` | auto | VS Code user-data directory |
 | `--codex-home` | ~/.codex | Codex home directory |
@@ -170,24 +175,33 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 In addition to printing to the terminal, the skill **always** writes a
 persisted, dated report folder to `--output-dir` (default
 **`~/Desktop/ai-token-usage`**). The folder is created if it does not exist.
-Layout (the date is the generation date, `YYYY-MM-DD`):
+**Each request gets its own folder**, named with the generation date and time
+(`YYYY-MM-DD_HH-MM-SS`) so multiple runs never overwrite each other. The data
+store and reports both live under this target dir (never inside the skill):
 
 ```
-<output-dir>/<YYYY-MM-DD>/
-  report.md            # all agents (root) — fixed template
-  chart.png            # 5-panel trend chart (see below)
-  raw/
-    report-data.json   # full structured data for re-analysis
-  <agent>/             # one folder per agent group (e.g. opencode, claudecode, copilot)
-    report.md          # that agent's report (same template)
-    chart.png          # that agent's chart
+<output-dir>/
+  data/                         # persistent raw-data store (see below)
+    data.csv
+    claudecode/data.csv
+    opencode/data.csv
+    copilot/data.csv
+    ...
+  report/<YYYY-MM-DD_HH-MM-SS>/
+    summary/                    # combined (all agents) report
+      report.md                 # fixed template, all agents merged
+      chart.png                 # 5-panel trend chart
+      raw/report-data.json      # full structured data for re-analysis
+    <agent>/                    # one folder per agent group (e.g. opencode, claudecode, copilot)
+      report.md                 # that agent's report (same template)
+      chart.png                 # that agent's chart
 ```
 
-- **Root `report.md`** — a self-contained markdown report using a **fixed
-  template** (Summary → Usage by Agent → Usage by Model → Top N Sessions →
-  Daily Usage → Trend Chart → Notes) so every run is comparable. Cost is shown
-  in the selected `--currency`.
-- **`chart.png`** (root and per-agent) — a 5-panel trend chart:
+- **`summary/report.md`** — a self-contained markdown report combining **all
+  agents** using a **fixed template** (Summary → Usage by Agent → Usage by
+  Model → Top N Sessions → Daily Usage → Trend Chart → Notes) so every run is
+  comparable. Cost is shown in the selected `--currency`.
+- **`chart.png`** (summary and per-agent) — a 5-panel trend chart:
   1. Daily token usage **by model** (stacked; combines the former by-agent +
      by-model panels),
   2. Daily **cost (RMB)**,
@@ -198,7 +212,7 @@ Layout (the date is the generation date, `YYYY-MM-DD`):
   `configs/apps.yaml` (profile `ai-token-usage`), so `scripts/init.py` installs
   it. If it is still unavailable, the PNG is skipped and the markdown notes the
   absence.
-- **`raw/report-data.json`** — the complete aggregated payload (daily,
+- **`summary/raw/report-data.json`** — the complete aggregated payload (daily,
   per-session, per-model, per-agent, `per_agent_model`, `daily_agent_model`,
   costs, tool availability) so you can run your own analyses or rebuild a
   report without re-scanning.
@@ -208,6 +222,101 @@ Layout (the date is the generation date, `YYYY-MM-DD`):
 
 Use `--no-save` to print only (e.g. for quick terminal checks), or point
 `--output-dir` elsewhere to collect reports.
+
+## Raw data store (persistent, merged)
+
+Beyond the per-request report folder, every run also **persists the raw
+per-session data** to `--data-dir` (default **`<output-dir>/data`**, i.e.
+co-located with the report under the target dir — never inside the skill) so the
+history survives across runs and can be re-analyzed later. This is independent of
+`--no-save` — the store is updated even for terminal-only reports unless you
+pass `--no-raw-data`.
+
+Each run fetches all agent-client data and **merges** it into the existing
+store, keyed by the composite `(host, session_key)` — `host` is the machine
+label (default local hostname; override with `--host`), `session_key` is the
+globally unique per-session id (e.g. `claude:<uuid>` / `opencode:<id>`). New
+rows are appended; rows already present (same host + session) are updated in
+place (their source logs are append-only, so values are stable). Re-running the
+report a month later therefore accumulates the full history into the same files
+without duplicates — and the same `session_key` from two different machines
+never collides because the `host` column keeps them distinct.
+
+Layout:
+
+```
+<data-dir>/
+  data.csv                       # combined: every host AND agent merged into one file
+  localhost/                     # the local machine (default host label)
+    claudecode/data.csv          # one CSV per agent group, nested under the host
+    opencode/data.csv
+    copilot/data.csv
+    codex/data.csv
+    ...
+  host-b/                        # another machine merged in via --import-host host-b
+    claudecode/data.csv
+    ...
+```
+
+`data/data.csv` is the single merged file the request describes — it is the
+union of all per-agent CSVs and is itself merged across runs. Columns
+(`host` is first; the upsert key is `(host, session_key)`):
+
+| Column | Meaning |
+|--------|---------|
+| `host` | Machine label (default local hostname; `--host` / `--import-host`) |
+| `session_key` | Unique session id (part of the merge/upsert key) |
+| `agent` | Raw agent label (e.g. `claude-cli`, `opencode`) |
+| `agent_group` | Folder/group name (e.g. `claudecode`, `opencode`) |
+| `model` | Model used by the session |
+| `task` | First user task / title |
+| `started_at` | Session start timestamp (ISO 8601) |
+| `cwd` | Working directory of the session |
+| `input_tokens` | Input tokens (incl. cache reads, full consumption) |
+| `output_tokens` | Output tokens (incl. reasoning) |
+| `total_tokens` | `input_tokens + output_tokens` |
+| `cache_read_tokens` | Cache-read tokens (priced cheaper) |
+| `turns` | Number of turns in the session |
+
+You can point any spreadsheet or analysis tool at `data/data.csv`, or load a
+single agent's history from `data/<group>/data.csv`. To rebuild the store from
+scratch, delete `<data-dir>` and run the report again.
+
+### Cross-machine merging
+
+If you use several machines (e.g. a Mac and a Windows laptop), each machine
+keeps its own local logs. To get one report that covers **all** of them, export
+one machine's store CSV and merge it into the other:
+
+```bash
+# 1) On each machine, capture its own local data (store is merged + report saved)
+python3 scripts/ai_token_usage.py --days 30
+
+# 2) On the Windows laptop, copy its combined store to the Mac, e.g.
+#    copy  <output-dir>/data/data.csv  ->  /tmp/win_data.csv  (via USB/cloud/ssh)
+
+# 3) On the Mac, merge the Windows data, then report across BOTH machines
+python3 scripts/ai_token_usage.py --import-data /tmp/win_data.csv --import-host windows --days 30
+```
+
+What happens on step 3:
+
+- Every row from `/tmp/win_data.csv` is merged into the Mac's
+  `<output-dir>/data/data.csv` (and its per-agent CSVs), tagged `host=windows`
+  (`--import-host` overrides the file's own host column so you control the
+  label). The merge key is `(host, session_key)`, so a session that happens to
+  share an id across machines stays separate, and re-importing the same file is
+  idempotent (updated in place, not duplicated).
+- The Windows rows that fall inside the requested range are folded into the
+  in-memory aggregation, so the report's totals, by-agent, by-model, and **by
+  host** sections include every machine — not just the Mac.
+- To label more than one foreign machine, run `--import-data` once per host
+  (e.g. `--import-host windows`, then `--import-host linux`). Each contributes
+  its own `host` value and rows.
+
+The report shows a **Usage by host** table (table/chart/markdown/JSON) so you
+can see per-machine token consumption at a glance. The `by_host` array is also
+included in the JSON output and in `raw/report-data.json`.
 
 ```bash
 # Default: prints table AND saves dated folder to ~/Desktop/ai-token-usage

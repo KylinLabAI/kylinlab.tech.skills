@@ -16,6 +16,10 @@ skills/laptop-setup/configs/apps.yaml.bak
 # workspace-setup: generated per-user workspace configs (contain repo remotes)
 skills/workspace-setup/configs/
 
+# ai-token-usage: persistent raw-data CSV store (live, regenerated each run,
+# accumulates merged history — never commit it)
+skills/ai-token-usage/data/
+
 # Per-user local registries generated with --output ~/my-tools.yaml etc.
 # (uncomment if you keep them inside the repo)
 # my-tools.yaml

@@ -34,6 +34,7 @@ import csv
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, date, timezone, timedelta
 
@@ -53,6 +54,236 @@ PLATFORM_KEYWORDS = {
     "codebuddy": "usage",
     "deepseek": "usage/by_api_key",
 }
+
+# Profile-page URL + the label that precedes the account name on it. After login
+# we open this page to learn the *real* account identity, which we then mask and
+# use as the data-folder name (so history is keyed on a person, not a placeholder
+# like auto_1). The cookie/login profile stays a placeholder (--account), only the
+# on-disk data folder uses the masked real name.
+PROFILE_URLS = {
+    "deepseek": ("https://platform.deepseek.com/profile", "用户名"),
+    "codebuddy": ("https://www.codebuddy.cn/profile/account-settings", "账号名称"),
+    "qoder": ("https://qoder.com.cn/account/profile", "名称"),
+    "trae": ("https://www.trae.cn/dashboard#account", "昵称"),
+    "trae-cn": ("https://www.trae.cn/dashboard#account", "昵称"),
+}
+
+
+def mask_account_name(name):
+    """Mask an account name for privacy before storing it on disk.
+
+    Rules:
+      - CJK names: keep first + last char, mask the middle ("王小二" -> "王x二",
+        "王二" -> "王x").
+      - Identifiers / phones: keep first 2 + last 2, mask the middle
+        ("13800000001" -> "13xxxxxxx01", "yh-2026" -> "yhxxx26").
+      - Too-short values keep the first char and mask the rest.
+    """
+    if not name:
+        return name
+    s = name.strip()
+    if not s:
+        return s
+    # Email: mask the local part but keep the domain so accounts stay
+    # distinguishable (kylinlab@example.com -> ky***b@example.com).
+    em = re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s)
+    if em:
+        local = em.group(1)
+        if len(local) <= 2:
+            masked_local = local[0] + "*"
+        elif len(local) <= 4:
+            masked_local = local[0] + "*" * (len(local) - 1)
+        else:
+            masked_local = local[0] + "*" * (len(local) - 2) + local[-1]
+        return f"{masked_local}@{em.group(2)}"
+    if re.search(r"[一-鿿]", s):  # contains CJK
+        n = len(s)
+        if n <= 1:
+            return s
+        if n == 2:
+            return s[0] + "x"
+        return s[0] + "x" * (n - 2) + s[-1]
+    n = len(s)
+    if n <= 1:
+        return s
+    if n <= 4:
+        return s[0] + "x" * (n - 1)
+    return s[:2] + "x" * (n - 4) + s[-2:]
+
+
+def _first_token(s):
+    """Take the first whitespace-delimited token, stripping stray quotes."""
+    s = s.strip().strip("\"'\"`")
+    toks = s.split()
+    return toks[0] if toks else s
+
+
+def _extract_profile_value(text, label):
+    """Best-effort extraction of the account value shown next to `label`."""
+    # "label: value" / "label：value" on one line
+    m = re.search(re.escape(label) + r"\s*[:：]\s*([^\n\r]{1,80})", text)
+    if m and m.group(1).strip():
+        return _first_token(m.group(1))
+    # "label value" (no colon)
+    m = re.search(re.escape(label) + r"\s+([^\n\r]{1,80})", text)
+    if m:
+        val = m.group(1).strip()
+        if val and not val.startswith((":", "：")):
+            return _first_token(val)
+    # any line containing the label; take the text after it
+    for line in text.splitlines():
+        if label in line:
+            after = line.split(label, 1)[1].strip(" :：-")
+            if after:
+                return _first_token(after)
+    # "label" on its own line, value on the following non-empty line (common SPA
+    # layout: the label and the value live in separate divs). Look a few lines ahead.
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if label in line:
+            rem = line.split(label, 1)[1].strip(" :：-")
+            if rem:
+                return _first_token(rem)
+            for j in range(i + 1, min(i + 4, len(lines))):
+                nxt = lines[j].strip()
+                if nxt and label not in nxt:
+                    return _first_token(nxt)
+    return None
+
+
+PROFILE_API = {
+    # platform -> (user-info endpoint, ordered JSON keys to try)
+    "qoder": ("https://qoder.com.cn/api/v1/me", ("name", "username", "email")),
+}
+
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _extract_email(text):
+    """Return the first email address found in `text`, or None."""
+    if not text:
+        return None
+    m = _EMAIL_RE.search(text)
+    return m.group(0) if m else None
+
+
+def _detect_account_name(page, platform):
+    """Return the raw account name (string) from the platform's user-info API
+    or profile/usage page, or None if it can't be read.
+
+    Priority (most reliable first):
+      1) user-info REST API (qoder's api/v1/me) — deterministic, no DOM timing.
+      2) an email visible on the CURRENT logged-in page (the usage/account
+         header almost always shows it; label-agnostic, robust across SPA
+         layouts and languages).
+      3) profile-page DOM parse keyed on a label (fallback only).
+    """
+    plat = platform.lower()
+    # 1) User-info REST API (most reliable; no DOM-timing dependency).
+    api = PROFILE_API.get(plat)
+    if api:
+        url, keys = api
+        try:
+            data = page.evaluate(
+                "async (u) => { try { const r = await fetch(u, {credentials:'include'});"
+                " const t = await r.text(); try { return JSON.parse(t); } catch(e){ return null; } }"
+                " catch(e){ return null; } }", url)
+            if isinstance(data, dict):
+                for k in keys:
+                    v = data.get(k)
+                    if v and str(v).strip():
+                        return str(v).strip()
+        except Exception:
+            pass
+    # 2) Email visible on the CURRENT page (we are already logged in on the
+    #    usage page; the account header usually shows the email).
+    try:
+        email = _extract_email(_page_text(page))
+        if email:
+            return email
+    except Exception:
+        pass
+    # 3) Profile-page DOM parse (fallback): navigate, then try email, then label.
+    info = PROFILE_URLS.get(plat)
+    if not info:
+        return None
+    url, label = info
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    except Exception:
+        try:
+            page.goto(url, timeout=20000)
+        except Exception:
+            return None
+    try:
+        page.wait_for_timeout(4000)
+    except Exception:
+        pass
+    text = _page_text(page)
+    email = _extract_email(text)
+    if email:
+        return email
+    return _extract_profile_value(text, label)
+
+
+def _is_placeholder(label):
+    """True for cookie-profile placeholders we must NOT use as a data-folder
+    name (they would silently mislabel history as e.g. 'account_1')."""
+    if not label:
+        return True
+    s = label.strip()
+    if s in ("", "default", "auto_1", "account_1"):
+        return True
+    if re.match(r"^(account_|auto_)\d+$", s):
+        return True
+    return False
+
+
+def _maybe_confirm(suggested, fallback):
+    """Return the label to use. When stdin is a TTY, let the user confirm / type
+    the correct masked label; otherwise (non-interactive runs) just return the
+    suggestion so the run never blocks. The chosen label is always printed for
+    the user to verify afterwards."""
+    val = suggested or fallback
+    if not sys.stdin.isatty():
+        return val
+    try:
+        ans = input(
+            f"[account] 数据文件夹将使用账号标签: '{val}' "
+            f"(直接回车确认，或输入正确的脱敏标签): ").strip()
+        if ans:
+            return ans
+    except Exception:
+        pass
+    return val
+
+
+def _resolve_data_label(page, platform, account, label=None):
+    """Decide the on-disk data label.
+
+    - If the user passed an explicit --label (non-placeholder), TRUST it; the
+      cookie/login profile stays the --account placeholder. We still auto-detect
+      purely for display.
+    - Otherwise prefer the auto-detected (masked) real name; confirm interactively
+      when possible; fall back to the --account placeholder only as a last resort.
+    """
+    if label and not _is_placeholder(label):
+        raw = _detect_account_name(page, platform)
+        if raw:
+            print(f"[account] 使用指定的 --label '{label}'"
+                  f"（自动识别到 '{mask_account_name(raw)}'，已忽略）。")
+        else:
+            print(f"[account] 使用指定的 --label '{label}'。")
+        return label
+    raw = _detect_account_name(page, platform)
+    if raw:
+        detected = mask_account_name(raw)
+        print(f"[account] 自动识别到脱敏账号: {detected}")
+        return _maybe_confirm(detected, account)
+    print(f"[account] 未能自动识别账号名；回退到占位标签 '{account}'。"
+          f" 可用 --label 指定明确标签。")
+    return _maybe_confirm(account, account)
 
 # Qoder's API returns fields like: time / begin_at / model_category / cost / credits / kind / source / operation
 QODER_FIELD_MAP = {
@@ -811,7 +1042,7 @@ def _ingest_deepseek(url, payload, state):
 
 def capture(platform, usage_url, login_url=None, keyword=None,
             scroll=20, headless=False, profile_dir=None,
-            start=None, end=None, account=None):
+            start=None, end=None, account=None, label=None):
     if sync_playwright is None:
         raise RuntimeError("playwright not installed. Run: pip install playwright")
     kw = keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage")
@@ -889,11 +1120,16 @@ def capture(platform, usage_url, login_url=None, keyword=None,
                 if api_records:
                     print(f"[api] auto-downloaded {len(api_records)} records "
                           f"via API (no manual login / download).")
+                    # Learn the real (masked) account name from the profile page
+                    # while we're still on a same-origin, logged-in page.
+                    data_label = _resolve_data_label(page, platform, account, label)
+                    for r in api_records:
+                        r["account"] = data_label
                     context.close()
                     warnings = _self_check(
                         platform, api_records, start, end,
                         keyword or PLATFORM_KEYWORDS.get(platform.lower(), "usage"))
-                    return api_records, warnings
+                    return api_records, warnings, data_label
                 print("[api] no data via API (session expired or empty range); "
                       "falling back to manual login + UI capture.")
 
@@ -947,17 +1183,20 @@ def capture(platform, usage_url, login_url=None, keyword=None,
         if platform.lower() in ("trae", "trae-cn"):
             _fetch_trae_all_pages(page, state, platform)
 
+        # Still logged in + on a same-origin page: read the real (masked)
+        # account name from the profile page before we close the session.
+        data_label = _resolve_data_label(page, platform, account, label)
         context.close()
 
     records = state["collected"]
-    # Tag every record with the account we captured it for. Stamp here (once)
-    # rather than in each capture branch, so UI-intercept, direct-API, Qoder,
-    # TRAE and DeepSeek paths all get it.
-    acc = _safe_name(account)
+    # Tag every record with the (masked) account we captured it for. Stamp here
+    # (once) rather than in each capture branch, so UI-intercept, direct-API,
+    # Qoder, TRAE and DeepSeek paths all get it. The label is the masked real
+    # name when detectable, otherwise the cookie-profile placeholder.
     for r in records:
-        r["account"] = acc
+        r["account"] = data_label
     warnings = _self_check(platform, records, start, end, kw)
-    return records, warnings
+    return records, warnings, data_label
 
 
 def _self_check(platform, records, start, end, kw):
@@ -1317,9 +1556,12 @@ def setup_accounts(platform, usage_url, login_url=None, keyword=None,
         print(f"        A Chrome window will open. Log in if prompted; "
               f"usage data loads automatically.")
         try:
-            recs, warnings = capture(
+            recs, warnings, data_label = capture(
                 platform, usage_url, login_url, keyword, scroll,
-                headless, prof, start=start, end=end, account=label)
+                headless, prof, start=start, end=end, account=label,
+                label=label)
+            if data_label and data_label != label:
+                print(f"        Detected account (masked): {data_label}")
         except Exception as e:
             print(f"[setup] account '{label}' failed: {e}")
             continue
@@ -1334,13 +1576,136 @@ def setup_accounts(platform, usage_url, login_url=None, keyword=None,
     return labels
 
 
+def _page_text(page):
+    """Best-effort page text (visible body, falling back to raw HTML)."""
+    try:
+        return page.inner_text("body") or ""
+    except Exception:
+        pass
+    try:
+        return page.content() or ""
+    except Exception:
+        return ""
+
+
+def _probe_account_label(platform, account, usage_url, login_url, keyword,
+                         headless, profile_dir):
+    """Open a logged-in browser just to read the (masked) real account name from
+    the profile page. Reuses the persistent cookie profile (--account is the
+    cookie-profile *placeholder*), so no manual login is needed when cookies are
+    still valid. Returns the masked name, or None if it can't be read yet.
+    """
+    if sync_playwright is None:
+        return None
+    info = PROFILE_URLS.get(platform.lower())
+    if not info:
+        return None
+    url, label = info
+    profile_dir = profile_dir or _default_profile_dir(platform, account)
+    os.makedirs(profile_dir, exist_ok=True)
+    try:
+        with sync_playwright() as p:
+            ctx = p.chromium.launch_persistent_context(
+                profile_dir, channel="chrome", headless=headless)
+            page = ctx.new_page()
+            try:
+                if login_url:
+                    page.goto(login_url)
+                    page.wait_for_load_state("domcontentloaded")
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            # Poll the (already-loaded) profile page; do NOT re-navigate, so an
+            # in-progress manual login / OTP isn't disrupted.
+            deadline = time.time() + 180
+            name = None
+            while time.time() < deadline:
+                name = _extract_profile_value(_page_text(page), label)
+                if name:
+                    break
+                page.wait_for_timeout(3000)
+            ctx.close()
+            return mask_account_name(name) if name else None
+    except Exception as e:
+        print(f"[probe] account-name detection skipped ({e}); using cookie label.")
+        return None
+
+
+def _migrate_data_folder(platform, from_label, to_label):
+    """Move data files from a placeholder / default folder into the real (masked)
+    account folder so history isn't orphaned when the label changes (e.g. auto_1
+    -> 王x二). from_label=None is the platform's default (unnamed) root; only its
+    loose CSVs are moved (sub-account folders are left untouched).
+    """
+    if not to_label or (from_label or "") == to_label:
+        return
+    from_dir = data_store.platform_data_dir(platform, from_label)
+    to_dir = data_store.platform_data_dir(platform, to_label)
+    if from_dir == to_dir or not os.path.isdir(from_dir):
+        return
+    moved = False
+    for name in os.listdir(from_dir):
+        src = os.path.join(from_dir, name)
+        if from_label is None and os.path.isdir(src):
+            continue  # keep sub-accounts when migrating the default root
+        dst = os.path.join(to_dir, name)
+        if os.path.exists(dst):
+            continue
+        try:
+            os.rename(src, dst)
+            moved = True
+        except OSError:
+            pass
+    try:
+        if from_label is None:
+            if not os.listdir(from_dir):
+                os.rmdir(from_dir)
+        else:
+            os.rmdir(from_dir)
+    except OSError:
+        pass
+    if moved:
+        print(f"[migrate] data {from_label or '(default)'} -> {to_label}")
+
+
+def _write_account_meta(platform, label, source_url=None):
+    """Record the masked account name + its profile source for reference."""
+    d = data_store.platform_data_dir(platform, label)
+    meta = {
+        "name": label,
+        "masked": True,
+        "source_url": source_url,
+        "detected_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(os.path.join(d, "account.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+
+def _profile_has_session(profile_dir):
+    """True if a persistent Chrome profile already holds cached login cookies,
+    so a re-run can auto-authenticate without opening a manual login window."""
+    if not profile_dir or not os.path.isdir(profile_dir):
+        return False
+    cookies = os.path.join(profile_dir, "Cookies")
+    return os.path.exists(cookies) and os.path.getsize(cookies) > 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Capture AI platform usage via Playwright.")
     ap.add_argument("--platform", required=True, help="qoder / trae / codebuddy / deepseek")
     ap.add_argument("--url", required=True, help="usage page URL")
     ap.add_argument("--account", default=None,
-                    help="account label when you own several accounts on this "
-                         "platform (stored under data/<platform>/accounts/<acc>/)")
+                    help="cookie/login PROFILE selector when you own several "
+                         "accounts on this platform (e.g. account_1, account_2 — "
+                         "a placeholder is fine). The on-disk data folder is named "
+                         "after the real, MASKED account name auto-detected from "
+                         "the profile page, not this value.")
+    ap.add_argument("--label", default=None,
+                    help="explicit (masked) data-folder name for this account "
+                         "(e.g. deepseek-kylinlab). Takes precedence over auto-"
+                         "detection; --account stays the cookie-profile selector. "
+                         "Use this to keep captured data and imported exports under "
+                         "one consistent label.")
     ap.add_argument("--login-url", default=None, help="login page URL (optional)")
     ap.add_argument("--keyword", default=None, help="override API URL keyword")
     ap.add_argument("--out", default=None, help="output CSV path (overrides data store)")
@@ -1401,36 +1766,55 @@ def main():
     if req_end and not req_start:
         req_start = req_end
 
-    # Incremental logic: if no explicit --out, consult the data store to see
-    # what is already captured, and only fetch the missing gaps.
+    # On-disk account label: prefer the masked REAL name read from the profile
+    # page; fall back to the --account cookie-profile placeholder, or the
+    # default/unnamed store. final_label stays None until we know it.
+    final_label = None
+    capture_label = None
+
+    # Incremental logic: when storing (no --out) and a range is given, probe the
+    # real (masked) name FIRST so coverage + the data folder are keyed on it,
+    # then fetch only the missing days.
     if not args.out and req_start and req_end:
-        from data_store import missing_ranges, last_covered_date, platform_data_dir
-        # Force re-fetch of the previous pull's final day: it may have been
-        # captured mid-day (e.g. at noon), so its tail is likely incomplete.
-        # Merging + dedup backfills the missing part without double-counting.
+        # Only probe the real (masked) name when the cookie profile already holds
+        # a cached session — otherwise the probe would open a SECOND login window.
+        # On a fresh profile, capture() performs the single login + name detection.
+        _prof = args.profile_dir or _default_profile_dir(args.platform, args.account)
+        probe_label = None
+        if _profile_has_session(_prof):
+            probe_label = _probe_account_label(
+                args.platform, args.account, args.url, args.login_url,
+                args.keyword, args.headless, args.profile_dir)
+        final_label = args.label or probe_label or args.account
         force = set()
         if not args.no_backfill:
-            prev_last = last_covered_date(args.platform, args.account)
-            if prev_last is not None:
-                force.add(prev_last)
-        # Coverage is per account: account A's data must not mask account B's gaps.
-        gaps = missing_ranges(req_start, req_end, args.platform,
-                              account=args.account, force_days=force)
+            prev = data_store.last_covered_date(args.platform, final_label)
+            if prev is not None:
+                force.add(prev)
+        gaps = data_store.missing_ranges(
+            req_start, req_end, args.platform, account=final_label,
+            force_days=force)
         if not gaps:
             print(f"[store] range {req_start}~{req_end} already fully cached; "
                   f"skip fetching. Use build_report.py to build the report.")
             return
         print(f"[store] need to fetch gaps: {gaps}")
-        # We fetch the union of gaps by setting the widest gap as the capture
-        # window; Qoder/TRAE UIs accept a single range, so use the outer bounds.
+        # Fetch the union of gaps; Qoder/TRAE UIs accept a single range, so use
+        # the outer bounds.
         g0, g1 = gaps[0][0], gaps[-1][1]
-        recs, warnings = capture(args.platform, args.url, args.login_url, args.keyword,
-                                 args.scroll, args.headless, args.profile_dir,
-                                 start=g0, end=g1, account=args.account)
+        recs, warnings, capture_label = capture(
+            args.platform, args.url, args.login_url, args.keyword,
+            args.scroll, args.headless, args.profile_dir,
+            start=g0, end=g1, account=args.account, label=args.label)
     else:
-        recs, warnings = capture(args.platform, args.url, args.login_url, args.keyword,
-                                 args.scroll, args.headless, args.profile_dir,
-                                 start=req_start, end=req_end, account=args.account)
+        recs, warnings, capture_label = capture(
+            args.platform, args.url, args.login_url, args.keyword,
+            args.scroll, args.headless, args.profile_dir,
+            start=req_start, end=req_end, account=args.account, label=args.label)
+
+    # Prefer what capture detected (API-first, reliable); otherwise the probed
+    # masked name; otherwise the cookie-profile placeholder.
+    final_label = capture_label or final_label or args.account
 
     if warnings:
         print("\n" + "=" * 60)
@@ -1443,6 +1827,21 @@ def main():
         print("[warn] no records captured. Check keyword / login / URL.")
         return
 
+    # Re-stamp every record with the final (masked) label so raw + merged stores
+    # agree, regardless of which path detected it.
+    for r in recs:
+        r["account"] = final_label
+
+    # Per-request RAW snapshot: one self-contained CSV per capture invocation,
+    # named by the range the user REQUESTED. Kept un-merged / un-deduped so a
+    # buggy capture or a data-loss event can be diagnosed / recovered.
+    raw_s, raw_e = req_start, req_end
+    if not (raw_s and raw_e):
+        ds = [datetime.strptime(r["date"], "%Y-%m-%d").date()
+              for r in recs if r.get("date")]
+        raw_s = raw_s or (min(ds) if ds else date.today())
+        raw_e = raw_e or (max(ds) if ds else date.today())
+
     if args.out:
         out = args.out
         fields = ["date", "model", "cost", "free", "prompt", "platform",
@@ -1452,20 +1851,38 @@ def main():
             w.writeheader()
             w.writerows(recs)
         print(f"[done] wrote {len(recs)} records -> {out}")
-    else:
-        # Persist via the incremental data store (merge + dedupe).
-        from data_store import merge_and_save, platform_data_dir
-        if not req_start or not req_end:
-            # No range given: default to the widest range seen in captured data.
-            ds = [datetime.strptime(r["date"], "%Y-%m-%d").date()
-                  for r in recs if r.get("date")]
-            req_start = min(ds) if ds else date.today()
-            req_end = max(ds) if ds else date.today()
-        path = merge_and_save(args.platform, recs, req_start, req_end,
-                              account=args.account)
-        print(f"[done] stored {len(recs)} records -> {path}")
-        print(f"        data dir: {platform_data_dir(args.platform, args.account)}")
-    acc_flag = f" --account {args.account}" if args.account else ""
+        return
+
+    # Migrate any placeholder / default history into the real (masked) folder so
+    # it isn't orphaned when the label changes from e.g. auto_1 to a name.
+    if final_label:
+        if args.account and args.account != final_label:
+            _migrate_data_folder(args.platform, args.account, final_label)
+        _migrate_data_folder(args.platform, "auto_1", final_label)  # legacy
+        if not args.account:
+            _migrate_data_folder(args.platform, None, final_label)  # default root
+
+    if raw_s and raw_e:
+        raw_path = data_store.save_raw_capture(
+            args.platform, final_label, raw_s, raw_e, recs)
+        print(f"[raw] per-request snapshot -> {raw_path}")
+
+    # Persist via the incremental data store (merge + dedupe), keyed on the
+    # masked account name.
+    if not req_start or not req_end:
+        # No range given: default to the widest range seen in captured data.
+        ds = [datetime.strptime(r["date"], "%Y-%m-%d").date()
+              for r in recs if r.get("date")]
+        req_start = min(ds) if ds else date.today()
+        req_end = max(ds) if ds else date.today()
+    path = data_store.merge_and_save(args.platform, recs, req_start, req_end,
+                                     account=final_label)
+    print(f"[done] stored {len(recs)} records -> {path}")
+    # Record the source profile URL + masked name for reference/reports.
+    src = PROFILE_URLS.get(args.platform.lower(), (None, None))[0]
+    _write_account_meta(args.platform, final_label, src)
+    print(f"        data dir: {data_store.platform_data_dir(args.platform, final_label)}")
+    acc_flag = f" --account {final_label}" if final_label else ""
     print(f"        next: python3 verify_data.py --platform {args.platform}"
           f"{acc_flag} --start {req_start} --end {req_end}")
     print(f"        then: python3 build_report.py --platform {args.platform}"

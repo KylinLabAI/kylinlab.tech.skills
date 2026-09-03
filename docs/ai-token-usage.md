@@ -96,8 +96,13 @@ python3 skills/ai-token-usage/scripts/ai_token_usage.py --current-session --agen
 | `--session-file` | — | Specific session JSONL (with `--current-session`) |
 | `--claude-projects-dir` | ~/.claude/projects | Claude Code projects directory |
 | `--currency` | CNY | Cost display currency: `USD`, `CNY`, or `RMB` (default CNY/RMB; chart cost panel is always RMB) |
-| `--output-dir` | `~/Desktop/ai-token-usage` | Directory for the saved `.md` report + trend chart PNG (created if missing) |
+| `--output-dir` | `~/Desktop/ai-token-usage` | Directory for the saved `.md` report + trend chart PNG (created if missing). Each run gets its own per-request subfolder named `YYYY-MM-DD_HHMMSS` |
 | `--no-save` | false | Do not write the `.md` report / chart image; print only |
+| `--data-dir` | `<skill>/data` | Persistent raw-data CSV store (created if missing). Merged across runs so history accumulates in `data/data.csv` + per-agent `data/<group>/data.csv` |
+| `--host` | local hostname | Machine label written on local rows in the data store (keeps same `session_key` from two hosts distinct) |
+| `--import-data CSV [CSV ...]` | — | Merge CSV file(s) exported from OTHER machines into the store, then report across all machines |
+| `--import-host` | — | Machine label for every row imported via `--import-data` (e.g. `windows`); overrides the file's host column. Defaults to the file's host / filename |
+| `--no-raw-data` | false | Do not update the persistent raw-data CSV store |
 | `--exclude-free` | false | Price free-tier models at $0 instead of their paid base rate (billable-only view). Default counts free models at their standard rate |
 
 ## Cost / Price Estimation
@@ -161,10 +166,12 @@ standard input rate used in the saved table.
 
 Besides terminal output, the skill **always** writes a persisted, dated report
 folder to `--output-dir` (default **`~/Desktop/ai-token-usage`**; created if
-missing). Layout:
+missing). **Each request gets its own folder**, named with the generation date
+and time (`YYYY-MM-DD_HHMMSS`) so multiple runs never overwrite each other.
+Layout:
 
 ```
-<output-dir>/<YYYY-MM-DD>/
+<output-dir>/<YYYY-MM-DD_HHMMSS>/
   report.md            # all agents (root), fixed template
   chart.png            # 5-panel trend chart
   raw/report-data.json # full structured data for re-analysis
@@ -191,6 +198,71 @@ missing). Layout:
   `codex-cli`+`codex-vscode` → `codex`.
 
 Use `--no-save` for terminal-only output, or `--output-dir` to redirect.
+
+## Raw Data Store (persistent, merged)
+
+Beyond the per-request report folder, every run also **persists the raw
+per-session data** to `--data-dir` (default **`<skill>/data`**) so the history
+survives across runs and can be re-analyzed later. This is independent of
+`--no-save` — the store is updated even for terminal-only reports unless you
+pass `--no-raw-data`.
+
+Each run fetches all agent-client data and **merges** it into the existing
+store, keyed by `session_key` (globally unique per session, e.g.
+`claude:<uuid>` / `opencode:<id>`). New sessions are appended; sessions already
+present are updated in place (their source logs are append-only, so values are
+stable). Re-running the report a month later therefore accumulates the full
+history into the same files without duplicates.
+
+Layout:
+
+```
+<data-dir>/
+  data.csv              # combined: every agent merged into one file
+  claudecode/data.csv   # one CSV per agent group
+  opencode/data.csv
+  copilot/data.csv
+  codex/data.csv
+  qoder/data.csv        # (availability-only agents still get a folder)
+  ...
+```
+
+`data/data.csv` is the single merged file — the union of all per-agent CSVs and
+itself merged across runs. Columns: `session_key`, `agent`, `agent_group`,
+`model`, `task`, `started_at`, `cwd`, `input_tokens`, `output_tokens`,
+`total_tokens`, `cache_read_tokens`, `turns`. Point any spreadsheet or analysis
+tool at `data/data.csv`, or load one agent's history from
+`data/<group>/data.csv`. To rebuild the store from scratch, delete
+`<data-dir>` and run the report again.
+
+### Cross-machine merging
+
+If you use several machines (e.g. a Mac and a Windows laptop), each keeps its
+own local logs. To get one report covering **all** of them, export one
+machine's store CSV and merge it into the other. The store's merge key is the
+composite `(host, session_key)`, and every row carries a `host` column (default
+local hostname; override with `--host` / `--import-host`), so the same
+`session_key` from two machines never collides.
+
+```bash
+# 1) On each machine, capture its own local data (store merged + report saved)
+python3 scripts/ai_token_usage.py --days 30
+
+# 2) Copy the Windows machine's combined store to the Mac, e.g.
+#    <skill>/data/data.csv  ->  /tmp/win_data.csv  (USB / cloud / ssh)
+
+# 3) On the Mac, merge the Windows data, then report across BOTH machines
+python3 scripts/ai_token_usage.py --import-data /tmp/win_data.csv --import-host windows --days 30
+```
+
+On step 3 every row from `/tmp/win_data.csv` is merged into the Mac's
+`data/data.csv` (and per-agent CSVs) tagged `host=windows`; re-importing the
+same file is idempotent (updated in place, not duplicated). Windows rows inside
+the range are folded into the aggregation so the report's totals, by-agent,
+by-model, and **by host** sections include every machine. The report shows a
+**Usage by host** table; JSON output and `raw/report-data.json` include a
+`by_host` array. For more than one foreign machine, run `--import-data` once per
+host (e.g. `--import-host windows`, then `--import-host linux`).
 
 ## When To Use It
 

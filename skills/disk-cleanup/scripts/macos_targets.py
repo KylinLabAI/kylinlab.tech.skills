@@ -22,8 +22,21 @@ TARGETS: tuple[CleanupTarget, ...] = (
         "macos-user-caches",
         "macos",
         "safe",
-        ("~/Library/Caches", "~/Library/Containers/*/Data/Library/Caches"),
-        "Regenerable per-user application caches.",
+        ("~/Library/Caches",),
+        "Per-user application caches. Orphan folders (whose app is no longer "
+        "installed) are removed entirely; caches of still-installed apps keep "
+        "only files older than the age threshold.",
+        mode="orphan-caches",
+    ),
+    CleanupTarget(
+        "macos-containers-orphans",
+        "macos",
+        "safe",
+        ("~/Library/Containers",),
+        "Sandboxed-app containers. Whole containers belonging to uninstalled "
+        "apps are removed; containers of still-installed apps are left untouched "
+        "(they may hold user data).",
+        mode="orphan-folders",
     ),
     CleanupTarget(
         "macos-user-logs",

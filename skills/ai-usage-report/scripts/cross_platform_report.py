@@ -12,9 +12,12 @@ Do not sum across platforms.
 
 Usage:
   python3 cross_platform_report.py [--days 30] [--start 2026-07-13] [--end 2026-08-11]
+
+Output (per request range):
+  report/<start>_<end>/summary/summary.html   # cross-vendor combined report
+  (per-vendor reports are produced by build_report.py under report/<start>_<end>/<platform>/)
 """
 import argparse
-import glob
 import os
 import sys
 import datetime as dt
@@ -64,6 +67,15 @@ def main():
     else:
         start = end - dt.timedelta(days=args.days)
 
+    # Report layout: one folder per request range, with a per-vendor sub-folder;
+    # the combined summary lives at report/<start>_<end>/summary/.
+    req_dir = data_store.report_request_dir(start, end)
+    plat_link = {}
+    for p in PLATS:
+        pdir = data_store.platform_report_dir(p, None, start, end)
+        plat_link[p] = (os.path.join("..", p, "report.html")
+                        if os.path.isfile(os.path.join(pdir, "report.html")) else f"{p}/")
+
     plat_verify = {}   # (platform, account) -> (errors, warnings)
     stats = {}
     cols = []          # one column per (platform, account)
@@ -96,10 +108,8 @@ def main():
                 wdates[d_str] += c
                 all_dates.add(d_str)
                 combined[d_str][key] += c
-            # highest report dir for the link, scoped to this account
-            rep_dirs = sorted(glob.glob(
-                os.path.join(data_store.platform_report_dir(p, acc), "*_*")))
-            link = rep_dirs[-1].replace(ROOT, "..") if rep_dirs else f"{p}/"
+            # link to this vendor's per-request report (default account)
+            link = plat_link[p]
             stats[key] = dict(n=n, cost=round(cost, 2), free=free, paid=paid,
                               models=dict(sorted(models.items(),
                                                  key=lambda x: -x[1])[:5]),
@@ -173,8 +183,7 @@ Qoder/DeepSeek 为美元/额度，TRAE/CodeBuddy 为积分(points)。
 </table>
 </body></html>"""
 
-    out = os.path.join(data_store.platform_report_dir("_combined"),
-                       f"{start}_{end}", "summary.html")
+    out = os.path.join(req_dir, "summary", "summary.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)

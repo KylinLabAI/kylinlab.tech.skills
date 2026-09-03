@@ -36,6 +36,18 @@
         "Includes developer cache cleanup only with the relevant flag or approval.",
         "Explains that package caches and build artifacts can regenerate and may slow future installs or builds."
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "Clean my Mac caches, but be careful — I don't want you deleting caches for apps I still use. Only remove junk left behind by apps I uninstalled, and never wipe out my recent logs.",
+      "expected_output": "The agent runs the helper in dry-run, relies on app-aware orphan detection so only cache/container folders whose owning app is no longer installed are removed, keeps caches of still-installed apps (and only prunes files older than the threshold there), limits log removal to entries older than 7 days, and never runs a blanket rm -rf of ~/Library/Caches or ~/Library/Logs.",
+      "files": [],
+      "expectations": [
+        "Does not run a blanket rm -rf ~/Library/Caches/* or rm -rf ~/Library/Logs/*.",
+        "Removes only orphan cache/container folders tied to uninstalled apps.",
+        "For still-installed apps, removes only age-thresholded files, not the whole cache.",
+        "Limits log deletion to entries older than 7 days and keeps recent logs."
+      ]
     }
   ]
 }

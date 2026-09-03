@@ -47,17 +47,29 @@ Captured data is cached under a single root (env `AI_USAGE_ROOT`, default
 ```
 ~/Desktop/ai-usage-report/
 ├── data/<platform>/
-│   ├── <start>_<end>.csv                 # default (unnamed) account
-│   └── accounts/<account>/               # one self-contained folder per account
-│       └── <start>_<end>.csv
-└── report/<platform>/
-    ├── <start>_<end>/                     # default account report
-    └── accounts/<account>/<start>_<end>/  # per-account report
-        └── _all/<start>_<end>/            # aggregate report (all accounts)
+│   ├── raw/<start>_<end>.csv            # default account: per-request RAW snapshot
+│   ├── <YYYY-MM>.csv                     # default (unnamed) account, ONE FILE PER MONTH
+│   └── <account>/                        # one self-contained folder per account
+│       ├── raw/<start>_<end>.csv        # that account's per-request RAW snapshot
+│       └── <YYYY-MM>.csv
+└── report/<start>_<end>/                 # ONE folder per request range
+    ├── <platform>/                        # per-vendor report
+    ├── <platform>/<account>/              # per-account report (optional)
+    ├── <platform>/_all/                   # vendor report across its accounts
+    └── summary/                           # cross-vendor combined report
 ```
 
 The default (unnamed) account lives at `data/<platform>/`, so data captured
 **before** multi-account support still works.
+
+Captured data is stored as **ONE FILE PER CALENDAR MONTH** (e.g.
+`2026-08.csv`), independent of the requested date range:
+
+- A request spanning months (8/15~9/10) updates several monthly files
+  (`2026-08.csv` **and** `2026-09.csv`).
+- A partial request (8/10~8/20) simply merges into the existing `2026-08.csv`.
+- Legacy `<start>_<end>.csv` files are auto-migrated into monthly files on the
+  next save, so storage converges to the monthly layout over time.
 
 This enables **reuse** (skip fetch if range is cached), **incremental fetch**
 (only fetch missing days, dedupe by
@@ -99,7 +111,7 @@ The skill ships five scripts:
 
 1. **`scrape_usage.py`** — open the platform site in a real browser, sign in,
    auto/manually page through, and write captured records to a normalized CSV
-   under `data/<platform>/` (or `data/<platform>/accounts/<label>/` when
+   under `data/<platform>/` (or `data/<platform>/<label>/` when
    `--account <label>` is given). A separate persistent Chrome profile is used
    per account.
 2. **`verify_data.py`** — check the cached capture for completeness (empty
@@ -107,7 +119,7 @@ The skill ships five scripts:
    is incomplete. **Always run this after a scrape** — missing >50% of days
    aborts report generation. Use `--account <label>` or `--all-accounts`.
 3. **`build_report.py`** — merge CSVs into matplotlib charts + an HTML report
-   under `report/<platform>/<start>_<end>/` (or per-account / `_all/` when
+   under `report/<start>_<end>/<platform>/` (or per-account / `_all/` when
    `--account` is given). It runs the verify gate first and aborts on failure
    (use `--force` to override, with care).
 4. **`cross_platform_report.py`** — combine all platforms into one overview HTML,
@@ -143,7 +155,7 @@ python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11
 
 If you own several logins on the same platform (e.g. 3 CodeBuddy accounts), pass
 `--account <label>` everywhere. Each account is stored under
-`data/<platform>/accounts/<label>/` with its own raw exports, captures, coverage
+`data/<platform>/<label>/` with its own raw exports, captures, coverage
 gaps and report — so they never overwrite or merge. The capture uses a separate
 persistent Chrome profile per account (one login each).
 
@@ -240,7 +252,7 @@ python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-15 [--
 
 Flags:
 - `--out DIR`: output folder (default `~/Desktop/<input>_report` for one-shot;
-  `~/Desktop/ai-usage-report/report/<platform>/<s>_<e>/` for store).
+  `~/Desktop/ai-usage-report/report/<s>_<e>/<platform>/` for store).
 - `--auto-fetch`: fill missing date gaps via the scraper before building.
 - `--account <label>`: scope every operation to one account
   (`scrape_usage.py` / `verify_data.py` / `build_report.py`). Use `all` with

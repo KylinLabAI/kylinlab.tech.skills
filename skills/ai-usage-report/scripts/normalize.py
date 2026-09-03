@@ -6,8 +6,8 @@ schema used by build_report.py, while KEEPING the originals untouched.
 Design
 ------
   data/<platform>/raw/                  <- default account exports
-  data/<platform>/accounts/<acc>/raw/   <- per-account exports
-  data/<platform>/[accounts/<acc>/]     <- generated normalized CSVs live here
+  data/<platform>/<account>/raw/        <- per-account exports
+  data/<platform>/[<account>/]<YYYY-MM>.csv  <- generated normalized CSVs (monthly)
 
 Each account gets its own raw/ folder so exports from different accounts on the
 same platform can never overwrite each other.
@@ -75,8 +75,8 @@ def _parse_dt(s):
     return None
 
 
-def normalize_codebuddy(xlsx_path, out_dir, account=None):
-    """Convert CodeBuddy export xlsx to normalized CSV."""
+def normalize_codebuddy(xlsx_path, account=None):
+    """Convert a CodeBuddy export xlsx into normalized row dicts (not written)."""
     wb = openpyxl.load_workbook(xlsx_path, read_only=True)
     ws = wb.active
     rows = []
@@ -104,28 +104,20 @@ def normalize_codebuddy(xlsx_path, out_dir, account=None):
             "request_id": str(rid or ""),
             "raw_client": str(client or ""),
         })
-    if rows:
-        dates = sorted({r["date"] for r in rows})
-        base = f"{dates[0]}_{dates[-1]}"
-    else:
-        base = os.path.splitext(os.path.basename(xlsx_path))[0]
-    out = os.path.join(out_dir, f"{base}.csv")
-    n = _write(rows, out)
-    return out, n
+    return rows
 
 
-def normalize_deepseek(zip_path, out_dir, account=None):
-    """Convert DeepSeek export zip to normalized CSV(s)."""
-    tmp = os.path.join(out_dir, ".tmp_unzip")
+def normalize_deepseek(zip_path, account=None):
+    """Convert a DeepSeek export zip into normalized row dicts (not written)."""
+    tmp = os.path.join(os.path.dirname(zip_path), ".tmp_unzip")
     os.makedirs(tmp, exist_ok=True)
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(tmp)
 
         cost_files = [f for f in os.listdir(tmp) if f.startswith("cost-") and f.endswith(".csv")]
-        written = []
+        rows = []
         for cf in cost_files:
-            rows = []
             with open(os.path.join(tmp, cf), "r", encoding="utf-8-sig") as f:
                 for row in csv.DictReader(f):
                     d = _parse_dt(row.get("start_time_iso", ""))
@@ -144,15 +136,7 @@ def normalize_deepseek(zip_path, out_dir, account=None):
                         "raw_currency": row.get("currency", ""),
                         "raw_end_time_iso": row.get("end_time_iso", ""),
                     })
-            if rows:
-                dates = sorted({r["date"] for r in rows})
-                out_name = f"{dates[0]}_{dates[-1]}.csv"
-            else:
-                out_name = cf
-            out = os.path.join(out_dir, out_name)
-            n = _write(rows, out)
-            written.append((out, n))
-        return written
+        return rows
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -220,21 +204,33 @@ def normalize_all(platform=None, account=None):
 
 
 def _normalize_account(platform, account):
-    """Normalize every export file in one account's raw/ folder."""
+    """Normalize every export file in one account's raw/ folder, writing
+    MONTHLY CSVs (one file per calendar month) into the account's data dir."""
     results = []
     raw = _raw_dir(platform, account)
     out_dir = data_store.platform_data_dir(platform, account)
     if not os.path.isdir(raw):
         return results
     label = platform if not account else f"{platform}/{account}"
+    all_rows = []
     for fn in sorted(os.listdir(raw)):
         src = os.path.join(raw, fn)
         if platform == "codebuddy" and fn.lower().endswith(".xlsx"):
-            out, n = normalize_codebuddy(src, out_dir, account)
-            results.append((label, fn, out, n))
+            all_rows.extend(normalize_codebuddy(src, account))
         elif platform == "deepseek" and fn.lower().endswith(".zip"):
-            for out, n in normalize_deepseek(src, out_dir, account):
-                results.append((label, fn, out, n))
+            all_rows.extend(normalize_deepseek(src, account))
+    # bucket by calendar month -> one monthly CSV, merged with existing data
+    by_month = {}
+    for r in all_rows:
+        try:
+            d = datetime.strptime(r["date"], DATE_FMT).date()
+        except Exception:
+            continue
+        by_month.setdefault((d.year, d.month), []).append(r)
+    for (y, mo), rows in sorted(by_month.items()):
+        path = data_store._month_path(out_dir, y, mo)
+        n = _write(rows, path)
+        results.append((label, f"{y:04d}-{mo:02d}", path, n))
     return results
 
 
@@ -250,7 +246,7 @@ def main():
     results = normalize_all(args.platform, args.account)
     if not results:
         print("[normalize] no raw export files found in "
-              "data/<platform>/raw/ (nor in data/<platform>/accounts/<acc>/raw/)")
+              "data/<platform>/raw/ (nor in data/<platform>/<account>/raw/)")
         return
     for p, src, out, n in results:
         print(f"[normalize] {p}: {src} -> {out} ({n} rows)")

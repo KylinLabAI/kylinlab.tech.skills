@@ -5,11 +5,14 @@ data_store.py — Persistent, incremental storage for AI platform usage data.
 Design goals
 ------------
 - One platform = one folder under ai-usage-report/data/<platform>/
-- Raw captures are saved as <start>_<end>.csv (date range in filenames) so we
-  can tell at a glance what period each file covers.
+- Raw captures are saved as <YYYY-MM>.csv — ONE FILE PER CALENDAR MONTH,
+  independent of whatever date range the user requested. A request that spans
+  several months updates several monthly files (e.g. 8/15~9/10 touches
+  2026-08.csv and 2026-09.csv); a partial request (8/10~8/20) simply merges into
+  the existing 2026-08.csv. Re-fetches never double-count (dedup by identity).
 - When a user asks for a date range we FIRST check what is already on disk.
-  We only fetch the *missing* days, then merge overlapping files into a single
-  consolidated dataset for reporting. This saves time and API calls.
+  We only fetch the *missing* days, then merge into the monthly files. This
+  saves time and API calls.
 
 Multi-account support
 ---------------------
@@ -18,12 +21,16 @@ accounts). Accounts MUST stay isolated: mixed together they would be
 indistinguishable, and rows that happen to share (date, model, cost) would be
 collapsed by the dedup logic, silently under-counting usage.
 
-Layout — every account is a self-contained mirror of the platform folder:
+Layout — every account is its own folder; the default (unnamed) account lives
+directly under the platform folder:
 
-    data/<platform>/                     # default account (back-compat)
-    data/<platform>/accounts/<acc>/      # one folder per extra account
-    report/<platform>/                   # default account reports
-    report/<platform>/accounts/<acc>/    # per-account reports
+    data/<platform>/<YYYY-MM>.csv              # default account, one file per month
+    data/<platform>/<account>/<YYYY-MM>.csv    # one folder per named account
+    data/<platform>/raw/<start>_<end>.csv      # per-request RAW snapshot (default)
+    data/<platform>/<account>/raw/<start>_<end>.csv  # per-account RAW snapshot
+    report/<start>_<end>/<platform>/           # per-request, per-vendor report
+    report/<start>_<end>/<platform>/<account>/ # per-account report (optional)
+    report/<start>_<end>/summary/              # cross-vendor combined report
 
 `account=None` (or "") always means the default store, so data captured before
 multi-account support keeps working unchanged.
@@ -34,18 +41,23 @@ Normalized record schema (same as the scraper / analyzer):
 Public API
 ----------
     ROOT                   -> ~/Desktop/ai-usage-report (overridable via env)
-    platform_data_dir(p, account=None)   -> .../data/<p>[/accounts/<acc>]
-    platform_report_dir(p, account=None) -> .../report/<p>[/accounts/<acc>]
+    platform_data_dir(p, account=None)   -> .../data/<p>[/<acc>]
+    platform_report_dir(p, account=None) -> .../report/<p>[/<acc>]
     list_accounts(p)       -> [None, "a", ...] accounts that hold CSVs
-    list_data_files(p, account=None)     -> [ (start, end, path), ... ]
+    list_data_files(p, account=None)     -> [ (start, end, path), ... ]  (monthly)
     covered_dates(p, account=None)       -> set(date) already captured
     missing_ranges(req_start, req_end, p, account=None)
                             -> list[(date,date)] of gaps to fetch
     merge_and_save(p, records, req_start, req_end, account=None)
                             -> writes/updates CSVs, returns consolidated path
+    raw_capture_dir(p, account=None)  -> .../data/<p>[/<acc>]/raw
+    raw_capture_path(p, account, start, end) -> .../raw/<start>_<end>.csv
+    save_raw_capture(p, account, start, end, records)
+                            -> writes one per-request RAW snapshot CSV
     load_consolidated(p, req_start, req_end, account=None)
                             -> combined, deduped CSV rows for a requested range
 """
+import calendar
 import csv
 import hashlib
 import os
@@ -59,9 +71,9 @@ ROOT = os.environ.get(
 FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "account",
           "requests", "request_id", "row_id"]
 DATE_FMT = "%Y-%m-%d"
-# Named accounts live under data/<platform>/accounts/<account>/. The default
-# (unnamed) account is the platform folder itself, for backwards compatibility.
-ACCOUNTS_DIRNAME = "accounts"
+# Named accounts live under data/<platform>/<account>/ (one folder per account).
+# The default (unnamed) account is the platform folder itself, so data captured
+# before multi-account support keeps working unchanged.
 # Cost tolerance for dedup: platforms may return the same logical cost with
 # tiny float/currency-conversion differences across re-fetches. Treat anything
 # within this epsilon as the same cost so it dedups instead of double-counting.
@@ -79,39 +91,123 @@ def _d(s):
 def safe_account(account):
     """Normalize an account label to a filesystem-safe folder name.
 
+    Unicode word characters (incl. CJK) are preserved, so a masked account name
+    like "王x二" becomes a valid, distinct folder name on macOS/Linux. Only
+    non-word separators (spaces, punctuation other than ./-) collapse to "-".
     Returns "" for the default (unnamed) account.
     """
     s = (account or "").strip()
     if not s:
         return ""
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", s).strip("-")
+    return re.sub(r"[^\w.-]+", "-", s).strip("-")
 
 
 def platform_data_dir(platform, account=None):
     d = os.path.join(ROOT, "data", platform.lower())
     acc = safe_account(account)
     if acc:
-        d = os.path.join(d, ACCOUNTS_DIRNAME, acc)
+        d = os.path.join(d, acc)
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def platform_report_dir(platform, account=None):
+def report_request_dir(req_start, req_end):
+    """Top-level report folder for one request range: report/<start>_<end>/."""
+    return os.path.join(ROOT, "report",
+                        f"{req_start.strftime('%Y-%m-%d')}_{req_end.strftime('%Y-%m-%d')}")
+
+
+def platform_report_dir(platform, account=None, req_start=None, req_end=None):
+    """Report output dir for a platform.
+
+    New layout (when a request range is supplied) — one folder per request,
+    with a sub-folder per vendor, and `_all` aggregating a vendor's accounts:
+        report/<start>_<end>/<platform>[/<account>]
+    The default (unnamed) account has no extra sub-folder. When no range is
+    given, the legacy report/<platform>[/<account>] is returned for backwards
+    compatibility.
+    """
+    if req_start and req_end:
+        d = report_request_dir(req_start, req_end)
+        d = os.path.join(d, platform.lower())
+        acc = safe_account(account)
+        if acc:
+            d = os.path.join(d, acc)
+        os.makedirs(d, exist_ok=True)
+        return d
     d = os.path.join(ROOT, "report", platform.lower())
     acc = safe_account(account)
     if acc:
-        d = os.path.join(d, ACCOUNTS_DIRNAME, acc)
+        d = os.path.join(d, acc)
     os.makedirs(d, exist_ok=True)
     return d
 
 
+def raw_capture_dir(platform, account=None):
+    """Folder for per-request raw capture snapshots.
+
+        data/<platform>/raw/                  # default account
+        data/<platform>/<account>/raw/        # named account
+    """
+    return os.path.join(platform_data_dir(platform, account), "raw")
+
+
+def raw_capture_path(platform, account, start, end):
+    """Path of the per-request raw snapshot for a capture window."""
+    return os.path.join(raw_capture_dir(platform, account),
+                        f"{start.strftime('%Y-%m-%d')}_{end.strftime('%Y-%m-%d')}.csv")
+
+
+def save_raw_capture(platform, account, start, end, records):
+    """Persist the raw captured records for ONE request as a single CSV snapshot.
+
+    One file per request range — even if ranges overlap or only a gap was
+    fetched, each scrape invocation gets its own self-contained file. This is the
+    un-merged, un-deduped capture output, kept for troubleshooting and recovery.
+    Returns the written path.
+    """
+    out = raw_capture_path(platform, account, start, end)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(records)
+    return out
+
+
+def _dir_has_csv(d):
+    """True if a directory contains at least one normalized .csv file."""
+    try:
+        return any(fn.endswith(".csv") for fn in os.listdir(d))
+    except OSError:
+        return False
+
+
 def list_account_dirs(platform):
-    """Names of named-account folders that exist on disk (may still be empty)."""
-    root = os.path.join(ROOT, "data", platform.lower(), ACCOUNTS_DIRNAME)
-    if not os.path.isdir(root):
-        return []
-    return sorted(n for n in os.listdir(root)
-                  if os.path.isdir(os.path.join(root, n)))
+    """Names of named-account folders that hold normalized CSVs on disk.
+
+    A named account is any sub-folder of data/<platform>/ that contains .csv
+    files (one folder per account; the default/unnamed store is the platform
+    folder itself, not listed here). Legacy accounts/<acc>/ folders are also
+    recognised so old captures are not orphaned.
+    """
+    root = os.path.join(ROOT, "data", platform.lower())
+    names = []
+    if os.path.isdir(root):
+        for n in sorted(os.listdir(root)):
+            if n == "raw":
+                # Per-request raw snapshots live here, not a data account.
+                continue
+            d = os.path.join(root, n)
+            if os.path.isdir(d) and _dir_has_csv(d):
+                names.append(n)
+    legacy = os.path.join(root, "accounts")
+    if os.path.isdir(legacy):
+        for n in sorted(os.listdir(legacy)):
+            d = os.path.join(legacy, n)
+            if os.path.isdir(d) and _dir_has_csv(d) and n not in names:
+                names.append(n)
+    return names
 
 
 def list_accounts(platform):
@@ -127,21 +223,41 @@ def list_accounts(platform):
     return out
 
 
-def _filename_for(start, end):
-    return f"{start.strftime(DATE_FMT)}_{end.strftime(DATE_FMT)}.csv"
+# Filename patterns. Monthly storage is the primary layout; legacy range-based
+# files (<start>_<end>.csv) are read for backwards compatibility and migrated
+# into monthly files on the next save.
+_RE_MONTH = re.compile(r"^(\d{4})-(\d{2})\.csv$")
+_RE_RANGE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$")
+
+
+def _month_path(account_dir, year, month):
+    """Path of the monthly CSV for a (year, month) inside an account folder."""
+    return os.path.join(account_dir, f"{year:04d}-{month:02d}.csv")
 
 
 def list_data_files(platform, account=None):
-    """Return list of (start_date, end_date, path) sorted by start date."""
+    """Return list of (start_date, end_date, path) sorted by start date.
+
+    Matches both monthly files (2026-08.csv -> 2026-08-01..2026-08-31) and
+    legacy range files (2026-08-01_2026-08-31.csv).
+    """
     d = platform_data_dir(platform, account)
     out = []
+    if not os.path.isdir(d):
+        return out
     for fn in os.listdir(d):
-        m = re.match(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$", fn)
-        if not m:
-            continue
-        s, e = _d(m.group(1)), _d(m.group(2))
-        if s and e:
+        m = _RE_MONTH.match(fn)
+        if m:
+            y, mo = int(m.group(1)), int(m.group(2))
+            s = date(y, mo, 1)
+            e = date(y, mo, calendar.monthrange(y, mo)[1])
             out.append((s, e, os.path.join(d, fn)))
+            continue
+        m = _RE_RANGE.match(fn)
+        if m:
+            s, e = _d(m.group(1)), _d(m.group(2))
+            if s and e:
+                out.append((s, e, os.path.join(d, fn)))
     out.sort(key=lambda t: t[0])
     return out
 
@@ -354,70 +470,86 @@ def load_consolidated(platform, req_start=None, req_end=None, account=None):
     return uniq
 
 
-def merge_and_save(platform, new_records, req_start, req_end, account=None):
-    """Merge freshly captured `new_records` into the store and persist.
+def _merge_rows(rows):
+    """Dedup rows by _dedup_key, keeping the most-complete copy. Stable order."""
+    best, order = {}, []
+    for r in rows:
+        k = _dedup_key(r)
+        if k in best:
+            if _more_complete(r, best[k]):
+                best[k] = r
+        else:
+            order.append(k)
+            best[k] = r
+    return [best[k] for k in order]
 
-    Strategy:
-    - Append new rows into the file whose range already covers [req_start,
-      req_end] if one exists; otherwise create a new dated file.
-    - Dedup against all existing rows to avoid double-counting overlaps.
-    - Scope everything to one account, so accounts never overwrite each other.
-    Returns the path of the file that was written/updated.
+
+def merge_and_save(platform, new_records, req_start=None, req_end=None,
+                   account=None):
+    """Merge freshly captured records into the store as MONTHLY CSV files.
+
+    Storage layout (independent of the requested range):
+        data/<platform>/<YYYY-MM>.csv            # default account
+        data/<platform>/<account>/<YYYY-MM>.csv  # one folder per named account
+
+    - Records are bucketed by their own calendar month, so a request spanning
+      several months updates several monthly files (e.g. 8/15~9/10 touches
+      2026-08.csv and 2026-09.csv); a partial request (8/10~8/20) simply merges
+      into the existing 2026-08.csv.
+    - Each monthly file is deduped against its previous contents, so re-fetches
+      and overlapping requests never double-count.
+    - Legacy <start>_<end>.csv files are folded into the monthly files and then
+      removed, so storage converges to the monthly layout over time.
+    Scoped to a single account; accounts never overwrite each other.
+    Returns the path of the most recent monthly file that was written.
     """
     acc = safe_account(account)
+    account_dir = platform_data_dir(platform, acc or None)
     for r in new_records:
         r["account"] = acc
-    existing = list_data_files(platform, acc or None)
-    # pick a target file: prefer one that already spans the requested range
-    target = None
-    for s, e, path in existing:
-        if s <= req_start and e >= req_end:
-            target = (s, e, path)
-            break
-    if target is None:
-        # create a new file named after the requested range
-        path = os.path.join(platform_data_dir(platform, acc or None),
-                            _filename_for(req_start, req_end))
-        target = (req_start, req_end, path)
 
-    _s, _e, path = target
-    # Build a global view of existing keys (with cost, for near-match checks).
-    # A new row is dropped if it matches an existing row on the stable key AND
-    # its cost is within epsilon of the existing cost (i.e. the same logical
-    # row re-fetched). Near-cost matches that differ beyond epsilon are kept
-    # (treated as genuinely distinct activity on the same day/model).
-    existing_rows = load_consolidated(platform, account=acc or None)
-    have_keys = {_dedup_key(r) for r in existing_rows}
-    have_cost = {_dedup_key(r): r for r in existing_rows}
-    old_rows = _read_rows(path)
-    merged = list(old_rows)
-    for r in merged:
-        # Rows already in the account file must carry the account tag, even if
-        # they were written before the account column existed.
-        r["account"] = acc
-    added = 0
-    for r in new_records:
-        key = _dedup_key(r)
-        if key in have_keys:
-            prev = have_cost[key]
-            if _cost_same(r, prev):
-                # Same logical row re-fetched -> backfill only if the new copy
-                # is more complete (then replace), otherwise skip to avoid dup.
-                if _more_complete(r, prev):
-                    merged = [m for m in merged if not _same_key(m, key)]
-                    merged.append(r)
-                continue
-            # cost differs beyond epsilon -> distinct activity, keep both
-        merged.append(r)
-        have_keys.add(key)
-        have_cost[key] = r
-        added += 1
-    # persist a stable row_id on every row so re-fetches stay idempotent
-    for r in merged:
-        r["row_id"] = _row_id(r)
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(merged)
-    print(f"[store] {path}: +{added} new, {len(merged)} total")
-    return path
+    # Source rows = the new capture plus any legacy range files still on disk.
+    legacy = [(s, e, p) for (s, e, p) in list_data_files(platform, acc or None)
+              if _RE_RANGE.match(os.path.basename(p))]
+    all_rows = list(new_records)
+    for _s, _e, p in legacy:
+        all_rows.extend(_read_rows(p))
+
+    # Bucket by calendar month.
+    by_month = {}
+    for r in all_rows:
+        dd = _d(r.get("date", ""))
+        if not dd:
+            continue
+        by_month.setdefault((dd.year, dd.month), []).append(r)
+
+    written = []
+    for (y, mo), rows in sorted(by_month.items()):
+        path = _month_path(account_dir, y, mo)
+        existing = _read_rows(path)
+        merged = _merge_rows(existing + rows)
+        for r in merged:
+            r["account"] = acc
+            r["row_id"] = _row_id(r)
+        merged.sort(key=lambda r: (r.get("date", ""), str(r.get("model", ""))))
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(merged)
+        added = max(len(merged) - len(existing), 0)
+        print(f"[store] {path}: {len(merged)} total"
+              + (f" (+{added} new)" if added else ""))
+        written.append(path)
+
+    # Migrate: drop legacy range files now that their months live in monthly files.
+    for _s, _e, p in legacy:
+        try:
+            os.remove(p)
+            print(f"[store] migrated legacy file -> {os.path.basename(p)}")
+        except OSError:
+            pass
+
+    if not written:
+        print(f"[store] no dated rows to persist for {platform}"
+              + (f"/{acc}" if acc else ""))
+    return written[-1] if written else account_dir

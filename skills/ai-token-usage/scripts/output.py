@@ -199,6 +199,31 @@ def print_availability_notes(notes: list[dict[str, str]]) -> None:
         )
 
 
+def print_host_summary(
+    per_host: dict[str, UsageBucket],
+) -> None:
+    """Print a compact per-machine (host) token summary."""
+    rows = []
+    for host, bucket in sorted(per_host.items(), key=lambda x: x[1].total_tokens, reverse=True):
+        rows.append([
+            host or "unknown",
+            f"{bucket.input_tokens:,}",
+            f"{bucket.output_tokens:,}",
+            f"{bucket.total_tokens:,}",
+            str(bucket.turns),
+            str(len(bucket.sessions)),
+            ", ".join(sorted(bucket.agents)) if bucket.agents else "",
+        ])
+    if not rows:
+        return
+    print()
+    print("Usage by host:")
+    print_rows(
+        ["host", "input", "output", "total", "turns", "sessions", "agents"],
+        rows, left_align={0, 6},
+    )
+
+
 def print_model_summary(
     per_model: dict[str, UsageBucket],
     model_cost: dict[str, float] | None = None,
@@ -242,6 +267,28 @@ def _format_tick(value: float, _pos: Any = None) -> str:
     return str(int(value))
 
 
+def _draw_share_pie(ax, title: str, mapping: dict, value_fmt) -> None:
+    """Draw a single share pie (usage split across labels) into ``ax``."""
+    import matplotlib.pyplot as plt
+    cmap = plt.colormaps["tab10"]
+    items = {k: v for k, v in mapping.items() if v}
+    if not items:
+        ax.axis("off")
+        ax.set_title(title, fontweight="bold")
+        return
+    labels = sorted(items, key=lambda x: -items[x])
+    sizes = [items[k] for k in labels]
+    ax.pie(
+        sizes,
+        labels=labels,
+        colors=[cmap(i % 10) for i in range(len(labels))],
+        autopct=lambda p: f"{p:.0f}%",
+        textprops={"fontsize": 8},
+        startangle=90,
+    )
+    ax.set_title(f"{title}\n({value_fmt(sum(sizes))})", fontweight="bold")
+
+
 def generate_chart_image(
     daily: dict[str, UsageBucket],
     dates: list[str],
@@ -249,35 +296,52 @@ def generate_chart_image(
     model_rates: dict[str, float] | None = None,
     output_path: str = "",
     verbose: bool = True,
+    pie_data: dict | None = None,
 ) -> None:
-    """Generate a multi-panel chart image:
+    """Generate a multi-panel chart image.
 
-    1. Daily token usage by model (stacked) — combines the previous by-agent
-       and by-model panels into one.
-    2. Daily cost (RMB).
-    3. Daily sessions.
-    4. Daily turns.
-    5. Model usage share (pie).
+    Trend panels:
+      1. Daily token usage by model (stacked).
+      2. Daily cost (RMB).
+      3. Daily sessions.
+      4. Daily turns.
+      5. Model usage share (pie).
+    If ``pie_data`` is given (summary report only), two extra diagram rows are
+    appended, each a 1x3 grid of pies:
+      - Host usage share by Tokens / Sessions / RMB.
+      - AI-agent client usage share by Tokens / Sessions / RMB.
+    ``pie_data`` shape::
+
+        {"host":  {"tokens": {h: v}, "sessions": {h: v}, "cost": {h: v}},
+         "agent": {"tokens": {g: v}, "sessions": {g: v}, "cost": {g: v}}}
     """
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import matplotlib.ticker as mticker
+        import matplotlib.gridspec as gridspec
     except ImportError:
         print("matplotlib is required for chart images. Install: pip install matplotlib",
               file=sys.stderr)
         return
 
     short_dates = [d[5:] for d in dates]  # MM-DD for x-axis
-    fig, axes = plt.subplots(5, 1, figsize=(max(9, len(dates) * 0.8), 16), squeeze=False)
-    axes = axes.flatten()
     cmap = plt.colormaps["tab10"]
+    n_top = 5
+    n_pie_rows = 2 if pie_data else 0
+    fig = plt.figure(
+        figsize=(max(10, len(dates) * 0.8), n_top * 3.0 + n_pie_rows * 3.2)
+    )
+    gs = gridspec.GridSpec(n_top + n_pie_rows, 1, figure=fig, hspace=1.1)
+
+    def trend_ax(i: int):
+        return fig.add_subplot(gs[i, 0])
 
     has_model = daily_model and len({m for dm in daily_model.values() for m in dm}) > 0
 
     # --- Panel 1: Daily tokens by model (stacked) ---
-    ax = axes[0]
+    ax = trend_ax(0)
     if has_model:
         all_models = sorted({m for dm in daily_model.values() for m in dm})
         mcolors = {m: cmap(i % 10) for i, m in enumerate(all_models)}
@@ -311,7 +375,7 @@ def generate_chart_image(
     # Computed exactly from each day's per-model input/output/cache split using
     # the saved price table (cached tokens are much cheaper, so the split
     # matters). model_rates is only a fallback for legacy scalar entries.
-    ax = axes[1]
+    ax = trend_ax(1)
     fx = fx_rate()
     cost_vals = []
     for d in dates:
@@ -341,7 +405,7 @@ def generate_chart_image(
             ax.text(i, v, _format_tick(v), ha="center", va="bottom", fontsize=7)
 
     # --- Panel 3: Daily sessions ---
-    ax = axes[2]
+    ax = trend_ax(2)
     sess = [len(daily.get(d, UsageBucket()).sessions) for d in dates]
     ax.bar(short_dates, sess, color="#4A90D9")
     ax.set_title("Daily Sessions", fontweight="bold")
@@ -349,7 +413,7 @@ def generate_chart_image(
     ax.tick_params(axis="x", rotation=45)
 
     # --- Panel 4: Daily turns ---
-    ax = axes[3]
+    ax = trend_ax(3)
     turns = [daily.get(d, UsageBucket()).turns for d in dates]
     ax.bar(short_dates, turns, color="#7AB648")
     ax.set_title("Daily Turns", fontweight="bold")
@@ -357,7 +421,7 @@ def generate_chart_image(
     ax.tick_params(axis="x", rotation=45)
 
     # --- Panel 5: Model usage share (pie) ---
-    ax = axes[4]
+    ax = trend_ax(4)
     pie_totals: dict[str, int] = {}
     for d in dates:
         for m, tok in (daily_model.get(d, {}) or {}).items():
@@ -371,7 +435,37 @@ def generate_chart_image(
     else:
         ax.axis("off")
 
-    fig.tight_layout()
+    # --- Host / AI-agent client usage share pies (summary only) ---
+    if pie_data:
+        for r_off, (key, label) in enumerate(
+            [("host", "Host"), ("agent", "AI-Agent Client")]
+        ):
+            inner = gridspec.GridSpecFromSubplotSpec(
+                1, 3, subplot_spec=gs[n_top + r_off, 0], wspace=0.5
+            )
+            block = pie_data.get(key, {})
+            _draw_share_pie(
+                fig.add_subplot(inner[0, 0]),
+                f"{label} Usage by Tokens",
+                block.get("tokens", {}),
+                _format_tick,
+            )
+            _draw_share_pie(
+                fig.add_subplot(inner[0, 1]),
+                f"{label} Usage by Sessions",
+                block.get("sessions", {}),
+                lambda v: f"{int(v)}",
+            )
+            _draw_share_pie(
+                fig.add_subplot(inner[0, 2]),
+                f"{label} Usage by RMB",
+                block.get("cost", {}),
+                lambda v: f"\u00a5{_format_tick(v)}",
+            )
+
+    # bbox_inches="tight" below handles spacing; tight_layout is skipped because
+    # it does not compose well with GridSpecFromSubplotSpec (would warn and can
+    # misplace the pie sub-axes).
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     if verbose:
@@ -530,6 +624,7 @@ def build_payload(
     metadata: dict[str, Any],
     per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
     daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
+    per_host: dict[str, UsageBucket] | None = None,
 ) -> dict[str, Any]:
     """Full structured payload; saved as raw data and used for JSON output."""
     model_cost, agent_cost, session_cost, total_cost, show_cost = compute_costs(
@@ -548,6 +643,10 @@ def build_payload(
             {"model": model, **bucket.to_dict(),
              "cost": round(to_display(estimate_cost(model, bucket.input_tokens, bucket.output_tokens, bucket.cache_read_tokens) or 0), 6)}
             for model, bucket in sorted(per_model.items(), key=lambda x: x[1].total_tokens, reverse=True)
+        ],
+        "by_host": [
+            {"host": host or "unknown", **bucket.to_dict()}
+            for host, bucket in sorted((per_host or {}).items(), key=lambda x: x[1].total_tokens, reverse=True)
         ],
         "session_infos": {k: v.to_dict() for k, v in session_infos.items()},
         "per_session": {
@@ -635,6 +734,7 @@ def print_table(
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
     chart_file: str | None = None,
+    per_host: dict[str, UsageBucket] | None = None,
 ) -> None:
     # --- Cost estimation (reads references/pricing.json) ---
     model_cost, agent_cost, session_cost, total_cost, show_cost = compute_costs(
@@ -656,6 +756,10 @@ def print_table(
 
     # --- Table 1: Usage by agent ---
     print_agent_summary(per_agent, agent_cost if show_cost else None)
+
+    # --- Table 1b: Usage by host (machine) ---
+    if per_host:
+        print_host_summary(per_host)
 
     # --- Table 2: Usage by model ---
     print_model_summary(per_model, model_cost if show_cost else None)
@@ -727,6 +831,7 @@ def render_markdown_report(
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
     chart_rel: str | None = None,
+    per_host: dict[str, UsageBucket] | None = None,
     meta: dict[str, str] | None = None,
 ) -> None:
     """Write a self-contained markdown report using a fixed section template.
@@ -785,6 +890,27 @@ def render_markdown_report(
         agent_headers.append("cost")
     L.append(_md_table(agent_headers, agent_rows))
     L.append("")
+
+    # By host (machine)
+    if per_host:
+        L.append("## Usage by Host")
+        L.append("")
+        host_rows = []
+        for host, bucket in sorted(per_host.items(), key=lambda x: x[1].total_tokens, reverse=True):
+            host_rows.append([
+                host or "unknown",
+                f"{bucket.input_tokens:,}",
+                f"{bucket.output_tokens:,}",
+                f"{bucket.total_tokens:,}",
+                str(bucket.turns),
+                str(len(bucket.sessions)),
+                ", ".join(sorted(bucket.agents)) if bucket.agents else "",
+            ])
+        L.append(_md_table(
+            ["host", "input", "output", "total", "turns", "sessions", "agents"],
+            host_rows,
+        ))
+        L.append("")
 
     # By model
     L.append("## Usage by Model")
@@ -921,10 +1047,12 @@ def print_json(
     metadata: dict[str, Any],
     per_agent_model: dict[str, dict[str, UsageBucket]] | None = None,
     daily_agent_model: dict[str, dict[str, dict[str, int]]] | None = None,
+    per_host: dict[str, UsageBucket] | None = None,
 ) -> None:
     payload = build_payload(
         daily, per_session, per_model, per_agent, session_infos, dates,
         top_sessions, metadata, per_agent_model, daily_agent_model,
+        per_host=per_host,
     )
     print(json.dumps(payload, indent=2, sort_keys=False))
 

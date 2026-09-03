@@ -9,8 +9,10 @@ Output formatting lives in output.py.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
+import socket
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -36,6 +38,8 @@ from common import (
     CurrentSessionUsage,
     resolve_range,
     date_keys,
+    add_usage,
+    parse_timestamp,
 )
 from copilot import (
     find_copilot_session_files,
@@ -62,6 +66,8 @@ from output import (
     render_markdown_report,
     build_agent_view,
     compute_model_rates,
+    compute_costs,
+    fx_rate,
     build_payload,
 )
 from opencode import (
@@ -74,6 +80,12 @@ from probe_ides import (
     scan_trae,
     scan_cloudecode,
     availability_notes,
+)
+from data_store import (
+    update_data_store,
+    merge_rows_into_store,
+    load_imported_csv,
+    AGENT_GROUP_MAP,
 )
 
 
@@ -89,6 +101,21 @@ def default_vscode_data_dir() -> str:
         return os.path.join(appdata, "Code", "User")
     else:
         return os.path.expanduser("~/.config/Code/User")
+
+
+def default_data_dir() -> str:
+    """Persistent raw-data CSV store, co-located with the skill (``data/``)."""
+    return str(Path(__file__).resolve().parent.parent / "data")
+
+
+def default_host() -> str:
+    """Local machine label for the raw-data store.
+
+    The local machine is labelled ``localhost`` so the store is organised as
+    ``data/localhost/<agent>/data.csv``; other machines are merged in with an
+    explicit ``--host`` / ``--import-host`` label (e.g. ``host-b``).
+    """
+    return "localhost"
 
 
 def parse_args() -> argparse.Namespace:
@@ -189,6 +216,42 @@ def parse_args() -> argparse.Namespace:
         help="Do not write the .md report / chart image to --output-dir; print only.",
     )
     parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Directory for the persistent raw-data CSV store. Default: "
+             "<output-dir>/data (co-located with the report under the target "
+             "dir, NOT inside the skill). Created if missing; merged across runs "
+             "so history accumulates in data/data.csv + per-agent "
+             "data/<group>/data.csv.",
+    )
+    parser.add_argument(
+        "--host",
+        default=default_host(),
+        help="Machine label for local sessions written to the data store "
+             "(default: localhost). Used so the same session_key from two "
+             "machines stays distinct (stored as data/<host>/<agent>/data.csv).",
+    )
+    parser.add_argument(
+        "--import-data",
+        nargs="+",
+        metavar="CSV",
+        help="Merge one or more CSV files exported from OTHER machines into the "
+             "data store, then report across all machines. Each file is a "
+             "`data/data.csv` produced by this skill on another host. Pair with "
+             "--import-host to label the source machine (e.g. windows).",
+    )
+    parser.add_argument(
+        "--import-host",
+        help="Machine label applied to every row imported via --import-data "
+             "(e.g. windows). Overrides the host column in the imported file. "
+             "If omitted, the file's own host column (or its filename) is used.",
+    )
+    parser.add_argument(
+        "--no-raw-data",
+        action="store_true",
+        help="Do not update the persistent raw-data CSV store.",
+    )
+    parser.add_argument(
         "--exclude-free",
         action="store_true",
         help="Price free-tier models at $0 instead of their paid base rate "
@@ -244,6 +307,12 @@ def analyze_current_session(session_path: Path) -> CurrentSessionUsage:
 
 def main() -> int:
     args = parse_args()
+
+    # Resolve the persistent raw-data store under the target (output) dir so it
+    # lives with the reports, not inside the skill. --data-dir can still
+    # override this explicitly.
+    output_root = Path(os.path.expanduser(args.output_dir)).resolve()
+    args.data_dir = args.data_dir or str(output_root / "data")
 
     # Force UTF-8 output streams. On Windows the default console encoding (e.g.
     # gbk) cannot encode symbols such as the cost "¥", which otherwise crashes
@@ -413,6 +482,50 @@ def main() -> int:
         "usage_records_counted": total_counted,
     }
 
+    # --- Tag local sessions with the machine label ---
+    local_host = args.host
+    for _info in session_infos.values():
+        _info.host = local_host
+
+    # --- Import data from other machines (merge into store + in-memory) ---
+    # This is the second half of the cross-machine workflow: a CSV exported by
+    # this skill on another host (e.g. Windows) is merged into the shared store
+    # and folded into the in-memory aggregation so the report covers every
+    # machine, not just this one.
+    if args.import_data:
+        imported_rows: list[dict[str, Any]] = []
+        for _fp in args.import_data:
+            imported_rows.extend(load_imported_csv(_fp, args.import_host, local_host))
+        if imported_rows and not args.no_raw_data:
+            _ires = merge_rows_into_store(args.data_dir, imported_rows)
+            _icb = _ires["combined"]
+            if _icb:
+                print(
+                    f"\nImported {len(imported_rows)} row(s) from "
+                    f"{len(args.import_data)} file(s) "
+                    f"(host={args.import_host or 'file'}): {_icb['new']} new, "
+                    f"{_icb['updated']} updated -> {_icb['path']}"
+                )
+        # Fold in-range imported rows into the in-memory aggregation so the
+        # report includes every machine.
+        for _r in imported_rows:
+            _ts = parse_timestamp(_r["started_at"])
+            if _ts is None or _ts < start or _ts >= end:
+                continue
+            _sk = _r["session_key"]
+            session_infos[_sk] = SessionInfo(
+                session_key=_sk, agent=_r["agent"], model=_r["model"],
+                task=_r["task"], started_at=_r["started_at"], cwd=_r["cwd"],
+                host=_r["host"],
+            )
+            add_usage(
+                daily, per_session, per_model, per_agent,
+                _r["input_tokens"], _r["output_tokens"], _sk, _r["model"],
+                _r["agent"], _ts, daily_agent, daily_model,
+                per_agent_model, daily_agent_model,
+                turns=_r["turns"], cache_read=_r["cache_read_tokens"],
+            )
+
     if not daily:
         print(
             f"No usage data found between {start.date()} and {(end - timedelta(days=1)).date()}.",
@@ -441,6 +554,37 @@ def main() -> int:
 
     notes = availability_notes()
 
+    # --- Persistent raw-data store (merged across runs) ---
+    # Saves every in-range session as a CSV row keyed by (host, session_key),
+    # upserting into data/data.csv (combined) and data/<group>/data.csv (per
+    # agent). Runs independently of --no-save so the history is preserved even
+    # for terminal-only reports.
+    if not args.no_raw_data:
+        store_result = update_data_store(
+            args.data_dir, session_infos, per_session, host=local_host
+        )
+        cb = store_result["combined"]
+        if cb:
+            print(
+                f"\nRaw data store updated: {cb['new']} new, "
+                f"{cb['updated']} updated session(s) -> {cb['path']}"
+            )
+            print(f"  Per-agent CSVs under: {args.data_dir}")
+
+    # Per-host aggregation (one bucket per machine) for the report.
+    per_host: dict[str, UsageBucket] = {}
+    for _sk, _b in per_session.items():
+        _h = (session_infos.get(_sk).host if session_infos.get(_sk) else "") or "unknown"
+        _pb = per_host.setdefault(_h, UsageBucket())
+        _pb.input_tokens += _b.input_tokens
+        _pb.output_tokens += _b.output_tokens
+        _pb.total_tokens += _b.total_tokens
+        _pb.cache_read_tokens += _b.cache_read_tokens
+        _pb.turns += _b.turns
+        _pb.sessions.add(_sk)
+        _pb.models.update(_b.models)
+        _pb.agents.update(_b.agents)
+
     if args.format == "table":
         print_table(
             daily, per_session, per_model, per_agent, session_infos, dates,
@@ -450,6 +594,7 @@ def main() -> int:
             daily_agent=daily_agent,
             daily_model=daily_model,
             chart_file=args.chart_file,
+            per_host=per_host,
         )
         print()
         print(
@@ -472,14 +617,18 @@ def main() -> int:
         print_json(
             daily, per_session, per_model, per_agent, session_infos, dates,
             args.top_sessions, metadata, per_agent_model, daily_agent_model,
+            per_host=per_host,
         )
 
-    # Default behavior: also persist a dated report folder containing the
-    # all-agent (root) report + chart, per-agent subfolders, and raw data.
+    # Default behavior: persist a dated report folder under <output-dir>/report.
+    # Layout:
+    #   report/<stamp>/summary/   -> combined (all agents) report + chart + raw
+    #   report/<stamp>/<agent>/   -> per-agent report + chart (one per agent)
+    # The folder name includes the time so every request gets its own folder.
     if not args.current_session and not args.no_save:
-        stamp = datetime.now().strftime("%Y-%m-%d")
-        date_dir = Path(os.path.expanduser(args.output_dir)).resolve() / stamp
-        date_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        report_dir = output_root / "report" / stamp
+        report_dir.mkdir(parents=True, exist_ok=True)
         if args.since and args.until:
             range_desc = f"{args.since} .. {args.until}"
         elif args.days:
@@ -497,37 +646,80 @@ def main() -> int:
                 f"'{_pricing.FALLBACK_KEY}' rates: {', '.join(fb_models)}."
             )
 
-        # --- Root (all agents) report + chart ---
-        root_md = date_dir / "report.md"
-        root_png = date_dir / "chart.png"
+        # --- Summary (all agents combined) report + chart + raw ---
+        summary_dir = report_dir / "summary"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_md = summary_dir / "report.md"
+        summary_png = summary_dir / "chart.png"
         rates_root = compute_model_rates(per_model)
         try:
+            # Build host / agent-group share data (tokens, sessions, RMB) for
+            # the two extra pie-diagram rows in the summary chart.
+            _, agent_cost, session_cost, _, _ = compute_costs(
+                per_model, per_session, session_infos
+            )
+            fx = fx_rate()
+            host_tokens: dict[str, int] = {}
+            host_sessions: dict[str, int] = {}
+            host_cost: dict[str, float] = {}
+            for _h, _b in per_host.items():
+                host_tokens[_h] = _b.total_tokens
+                host_sessions[_h] = len(_b.sessions)
+                host_cost[_h] = 0.0
+            agent_tokens: dict[str, int] = {}
+            agent_sessions: dict[str, int] = {}
+            agent_cost_g: dict[str, float] = {}
+            for _a, _b in per_agent.items():
+                _g = AGENT_GROUP_MAP.get(_a, _a or "unknown")
+                agent_tokens[_g] = agent_tokens.get(_g, 0) + _b.total_tokens
+                agent_sessions[_g] = agent_sessions.get(_g, 0) + len(_b.sessions)
+                agent_cost_g[_g] = agent_cost_g.get(_g, 0.0) + agent_cost.get(_a, 0.0) * fx
+            for _sk, _c in session_cost.items():
+                _h = (
+                    session_infos.get(_sk).host
+                    if session_infos.get(_sk) else ""
+                ) or "unknown"
+                host_cost[_h] = host_cost.get(_h, 0.0) + _c * fx
+            pie_data = {
+                "host": {
+                    "tokens": host_tokens,
+                    "sessions": host_sessions,
+                    "cost": host_cost,
+                },
+                "agent": {
+                    "tokens": agent_tokens,
+                    "sessions": agent_sessions,
+                    "cost": agent_cost_g,
+                },
+            }
             generate_chart_image(
-                daily, dates, daily_model, rates_root, str(root_png), verbose=False
+                daily, dates, daily_model, rates_root, str(summary_png),
+                verbose=False, pie_data=pie_data,
             )
         except Exception as exc:  # pragma: no cover - defensive
             print(f"Chart image skipped: {exc}", file=sys.stderr)
-        chart_rel = root_png.name if root_png.exists() else None
+        chart_rel = summary_png.name if summary_png.exists() else None
         render_markdown_report(
-            str(root_md),
+            str(summary_md),
             daily=daily, per_session=per_session, per_model=per_model,
             per_agent=per_agent, session_infos=session_infos, dates=dates,
             top_sessions=args.top_sessions, daily_agent=daily_agent,
             daily_model=daily_model, chart_rel=chart_rel,
+            per_host=per_host,
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "range": range_desc,
-                "agent": args.agent or "all",
+                "agent": args.agent or "all (combined)",
                 "currency": _pricing.cost_label(),
                 "notes": notes_list,
             },
         )
-        print(f"\nReport saved to: {root_md}")
+        print(f"\nSummary report saved to: {summary_md}")
         if chart_rel:
-            print(f"Chart image saved to: {root_png}")
+            print(f"Summary chart saved to: {summary_png}")
 
         # --- Raw data for re-analysis ---
-        raw_dir = date_dir / "raw"
+        raw_dir = summary_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         raw_payload = build_payload(
             daily, per_session, per_model, per_agent, session_infos, dates,
@@ -556,7 +748,7 @@ def main() -> int:
                 per_agent_model=per_agent_model, session_infos=session_infos,
                 dates=dates, daily_agent_model=daily_agent_model,
             )
-            adir = date_dir / g.replace("-", "")
+            adir = report_dir / g.replace("-", "")
             adir.mkdir(parents=True, exist_ok=True)
             ampng = adir / "chart.png"
             amd = adir / "report.md"

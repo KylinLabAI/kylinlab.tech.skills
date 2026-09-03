@@ -18,6 +18,8 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app_probe import is_app_installed, looks_like_bundle_id
+
 
 @dataclass(frozen=True)
 class CleanupTarget:
@@ -43,6 +45,9 @@ class TargetReport:
     dirs_removed: int = 0
     skipped_recent: int = 0
     skipped_symlink: int = 0
+    orphans_removed: int = 0
+    skipped_unknown: int = 0
+    skipped_kept: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -267,4 +272,94 @@ def scan_old_children(root: Path, target: CleanupTarget, cutoff: float, apply: b
                     child.unlink()
             except OSError as exc:
                 report.errors.append(f"{display_path(child)}: delete failed: {exc}")
+    return report
+
+
+def dir_size_no_follow(path: Path) -> int:
+    """Sum size of regular files under ``path`` without following symlinks."""
+    total = 0
+    for dirpath, _, filenames in os.walk(path, followlinks=False):
+        current_dir = Path(dirpath)
+        for filename in filenames:
+            child = current_dir / filename
+            try:
+                st = child.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+                continue
+            total += st.st_size
+    return total
+
+
+def scan_orphan(root: Path, target: CleanupTarget, cutoff: float, apply: bool, clean_installed_by_age: bool) -> TargetReport:
+    """Clean cache/container folders that belong to uninstalled apps.
+
+    For each child folder of ``root``:
+
+    - if the name does not look like a bundle id, it is skipped (unknown);
+    - if no installed app matches the name, the whole folder is orphaned and
+      removed in full (it can never regenerate — pure junk);
+    - if an app is still installed and ``clean_installed_by_age`` is set, only
+      files older than ``cutoff`` are removed (the existing safe behavior);
+    - if an app is still installed and ``clean_installed_by_age`` is False, the
+      folder is left completely untouched (e.g. a sandboxed app container that
+      may hold user data).
+
+    Never follows symlinks and never touches the ``root`` directory itself.
+    """
+    report = TargetReport(
+        key=target.key,
+        profile=target.profile,
+        root=display_path(root),
+        mode=target.mode,
+        description=target.description,
+        exists=root.exists(),
+    )
+    if not root.exists():
+        return report
+    if is_symlink(root):
+        report.skipped_symlink += 1
+        return report
+    if not root.is_dir():
+        report.errors.append("Target is not a directory")
+        return report
+
+    try:
+        children = sorted(root.iterdir())
+    except OSError as exc:
+        report.errors.append(f"{display_path(root)}: list failed: {exc}")
+        return report
+
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not looks_like_bundle_id(child.name):
+            report.skipped_unknown += 1
+            continue
+
+        if not is_app_installed(child.name):
+            if is_symlink(child):
+                report.skipped_symlink += 1
+                continue
+            report.bytes_reclaimable += dir_size_no_follow(child)
+            report.items_matched += 1
+            report.orphans_removed += 1
+            if apply:
+                try:
+                    shutil.rmtree(child)
+                    report.dirs_removed += 1
+                except OSError as exc:
+                    report.errors.append(f"{display_path(child)}: delete failed: {exc}")
+        elif clean_installed_by_age:
+            sub = scan_old_files(child, target, cutoff, apply)
+            report.bytes_reclaimable += sub.bytes_reclaimable
+            report.files_matched += sub.files_matched
+            report.items_matched += sub.items_matched
+            report.skipped_recent += sub.skipped_recent
+            report.skipped_symlink += sub.skipped_symlink
+            report.dirs_removed += sub.dirs_removed
+            report.errors.extend(sub.errors)
+        else:
+            report.skipped_kept += 1
     return report

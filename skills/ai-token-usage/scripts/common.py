@@ -142,6 +142,7 @@ class SessionInfo:
     task: str = ""
     started_at: str = ""
     cwd: str = ""
+    host: str = ""
 
     def to_dict(self, bucket: UsageBucket | None = None) -> dict[str, Any]:
         row: dict[str, Any] = {
