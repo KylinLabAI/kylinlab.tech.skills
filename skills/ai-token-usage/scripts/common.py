@@ -151,6 +151,7 @@ class SessionInfo:
             "model": self.model,
             "task": self.task,
             "started_at": self.started_at,
+            "host": self.host,
         }
         if bucket:
             row["input_tokens"] = bucket.input_tokens

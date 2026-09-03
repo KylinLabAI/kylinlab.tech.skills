@@ -142,6 +142,7 @@ def print_top_sessions(
             f"{bucket.output_tokens:,}",
             str(bucket.turns),
             info.agent,
+            info.host or "unknown",
             ", ".join(sorted(bucket.models)) or UNKNOWN_MODEL,
             compact_text(info.task or "-", 80),
         ]
@@ -151,10 +152,10 @@ def print_top_sessions(
 
     print()
     print(f"Top {len(rows)} sessions by total tokens:")
-    headers = ["#", "total", "input", "output", "turns", "agent", "models", "task"]
+    headers = ["#", "total", "input", "output", "turns", "agent", "host", "models", "task"]
     if session_cost is not None:
         headers.append("cost")
-    print_rows(headers, rows, left_align={5, 6, 7})
+    print_rows(headers, rows, left_align={5, 6, 7, 8})
 
 
 def print_agent_summary(
@@ -950,13 +951,14 @@ def render_markdown_report(
                 f"{bucket.output_tokens:,}",
                 str(bucket.turns),
                 info.agent,
+                info.host or "unknown",
                 ", ".join(sorted(bucket.models)) or UNKNOWN_MODEL,
                 compact_text(info.task or "-", 80),
             ]
             if show_cost:
                 row.append(fmt_cost(session_cost.get(sk, 0)))
             sess_rows.append(row)
-        sess_headers = ["#", "total", "input", "output", "turns", "agent", "models", "task"]
+        sess_headers = ["#", "total", "input", "output", "turns", "agent", "host", "models", "task"]
         if show_cost:
             sess_headers.append("cost")
         L.append(_md_table(sess_headers, sess_rows))
