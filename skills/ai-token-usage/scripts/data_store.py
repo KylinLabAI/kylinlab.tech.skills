@@ -52,11 +52,16 @@ from typing import Any
 
 
 def mask_host(host: str) -> str:
-    """Mask a hostname for privacy: keep the first/last 2 chars, star the middle.
+    """Mask a hostname for privacy: keep the first/last 2 chars, hash the middle.
 
-    e.g. ``kylin-win`` -> ``ky*****in``.  Hosts of 4 chars or fewer keep only the
-    first and last character (``mbp`` -> ``m*p``).  The transform is idempotent,
+    e.g. ``kylin-win`` -> ``ky#####in``.  Hosts of 4 chars or fewer keep only the
+    first and last character (``mbp`` -> ``m#p``).  The transform is idempotent,
     so a value that is already masked is returned unchanged.
+
+    The mask character is ``#`` rather than ``*`` because this label becomes a
+    real directory name (``data/<masked-host>/<agent>/data.csv``) and ``*`` is
+    an illegal filename character on Windows (``OSError: [WinError 123]``).
+    ``#`` is portable across Windows, macOS and Linux.
     """
     host = (host or "").strip()
     if not host:
@@ -68,8 +73,8 @@ def mask_host(host: str) -> str:
     if len(host) <= 4:
         if len(host) <= 2:
             return host
-        return host[0] + "*" * (len(host) - 2) + host[-1]
-    return host[:2] + "*" * (len(host) - 4) + host[-2:]
+        return host[0] + "#" * (len(host) - 2) + host[-1]
+    return host[:2] + "#" * (len(host) - 4) + host[-2:]
 
 
 def real_hostname() -> str:

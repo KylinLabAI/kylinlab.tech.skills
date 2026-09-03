@@ -253,7 +253,7 @@ Layout:
     copilot/data.csv
     codex/data.csv
     ...
-  ky*****in/                     # e.g. another machine merged in via --import-host kylin-win
+  ky#####in/                     # e.g. another machine merged in via --import-host kylin-win
     claudecode/data.csv
     ...
 ```

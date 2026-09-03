@@ -115,7 +115,7 @@ def default_host() -> str:
 
     The local machine is labelled with its **real** hostname (via
     ``socket.gethostname()``), masked for privacy — e.g. ``kylin-win`` becomes
-    ``ky*****in``.  This keeps each machine distinct in the store
+    ``ky#####in``.  This keeps each machine distinct in the store
     (``data/<masked-host>/<agent>/data.csv``) instead of every machine writing
     the same ``localhost`` label.  Other machines are merged in with an explicit
     ``--import-host`` label (also masked).
