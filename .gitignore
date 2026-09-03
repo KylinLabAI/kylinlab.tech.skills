@@ -20,6 +20,10 @@ skills/workspace-setup/configs/
 # accumulates merged history — never commit it)
 skills/ai-token-usage/data/
 
+# ai-usage-report: user-edited local config (create from config.yaml.template,
+# which IS committed). The real config.yaml holds a personal path and is ignored.
+skills/ai-usage-report/configs/config.yaml
+
 # Per-user local registries generated with --output ~/my-tools.yaml etc.
 # (uncomment if you keep them inside the repo)
 # my-tools.yaml

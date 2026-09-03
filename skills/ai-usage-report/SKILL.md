@@ -38,8 +38,10 @@ install ad hoc.
 
 ## Persistent data store (incremental + reuse)
 
-All captured data lives under a single root (override with env `AI_USAGE_ROOT`,
-default **`~/Desktop/ai-usage-report`**):
+All captured data lives under a single root. It is **user-configurable** in
+`configs/config.yaml` (`data_root`); you can also override it with the env var
+`AI_USAGE_ROOT`. Precedence: `AI_USAGE_ROOT` > `config.yaml` `data_root` >
+built-in default **`~/Desktop/ai-usage-report`**:
 
 ```
 ~/Desktop/ai-usage-report/

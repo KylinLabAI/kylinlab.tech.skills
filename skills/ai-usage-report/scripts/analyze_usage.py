@@ -312,15 +312,16 @@ def analyze(records, platform, out_dir):
 def main():
     ap = argparse.ArgumentParser(description="Analyze AI platform usage export and generate report.")
     ap.add_argument("input", help="Path to usage export file (xlsx/zip/csv/json)")
-    ap.add_argument("--out", default=None, help="Output directory (default: ~/Desktop/<input>_report)")
+    ap.add_argument("--out", default=None, help="Output directory (default: <data_root>/<input>_report)")
     ap.add_argument("--platform", default=None, help="Force platform name (CodeBuddy/DeepSeek/Qoder/TRAE/...)")
     args = ap.parse_args()
 
     if args.out:
         out = args.out
     else:
+        from data_store import get_root
         stem = os.path.splitext(os.path.basename(args.input))[0]
-        out = os.path.join(os.path.expanduser("~/Desktop"), stem + "_report")
+        out = os.path.join(get_root(), stem + "_report")
     records, platform = detect_and_parse(args.input, args.platform)
     summary = analyze(records, platform, out)
     print(f"Platform: {platform}")

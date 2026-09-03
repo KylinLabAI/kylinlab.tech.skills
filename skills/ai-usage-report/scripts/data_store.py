@@ -64,10 +64,45 @@ import os
 import re
 from datetime import date, datetime
 
-ROOT = os.environ.get(
-    "AI_USAGE_ROOT",
-    os.path.join(os.path.expanduser("~/Desktop"), "ai-usage-report"),
-)
+def _load_user_config():
+    """Load the user-editable configs/config.yaml (sibling of this script's
+    parent dir). Returns {} when missing or unreadable so the rest of the code
+    can fall back to env / built-in defaults."""
+    cfg_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "configs", "config.yaml",
+    )
+    if not os.path.exists(cfg_path):
+        return {}
+    try:
+        import yaml
+        with open(cfg_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+_CONFIG = _load_user_config()
+
+
+def get_root():
+    """Resolve the output root.
+
+    Precedence (highest wins):
+        1. env  AI_USAGE_ROOT
+        2. config.yaml `data_root`   (user-editable, no code change needed)
+        3. built-in  ~/Desktop/ai-usage-report
+    """
+    root = os.environ.get("AI_USAGE_ROOT")
+    if not root:
+        root = _CONFIG.get("data_root")
+    if not root:
+        root = os.path.join(os.path.expanduser("~/Desktop"), "ai-usage-report")
+    return os.path.expanduser(root)
+
+
+ROOT = get_root()
 FIELDS = ["date", "model", "cost", "free", "prompt", "platform", "account",
           "requests", "request_id", "row_id"]
 DATE_FMT = "%Y-%m-%d"

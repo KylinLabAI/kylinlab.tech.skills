@@ -1352,7 +1352,7 @@ def capture(platform, usage_url, login_url=None, keyword=None,
         # target elements aren't present.
         if platform.lower() == "qoder":
             _set_qoder_date_range(page, state, state.get("start"), state.get("end"))
-        if platform.lower() in ("trae", "trae-cn"):
+        if platform.lower() == "trae":
             _fetch_trae_all_pages(page, state, platform)
 
         # Still logged in + on a same-origin page: read the real (masked)

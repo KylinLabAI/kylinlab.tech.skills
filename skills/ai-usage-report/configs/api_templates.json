@@ -26,5 +26,13 @@
     "date_format": "date",
     "pagination": {"page_param": "page", "size": 100, "stop_when_less_than_size": true},
     "auth": "cookie"
+  },
+  "trae": {
+    "note": "Export-only: no known direct usage API yet. Keep using the file-export path (drop the usage export into raw/) or run --discover to capture the real endpoint as a live override.",
+    "url": null,
+    "method": "GET",
+    "date_format": "date",
+    "pagination": {"page_param": "page", "size": 100, "stop_when_less_than_size": true},
+    "auth": "cookie"
   }
 }

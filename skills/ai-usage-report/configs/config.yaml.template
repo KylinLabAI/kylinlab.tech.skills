@@ -1,0 +1,21 @@
+# =============================================================================
+# AI Usage Report - User configuration (TEMPLATE)
+# =============================================================================
+# This file is committed. Copy it to `config.yaml` (same folder) and edit the
+# copy — `config.yaml` is git-ignored so your local path is never committed.
+#
+#   cp configs/config.yaml.template configs/config.yaml
+#
+# All paths are expanded for ~ and may be absolute or relative to your home.
+# Edit, save, and re-run — no reinstall needed.
+
+# -----------------------------------------------------------------------------
+# Root directory for ALL captured data and generated reports.
+#   data/      -> captured usage CSVs (per platform / account)
+#   report/    -> generated HTML / chart reports
+# -----------------------------------------------------------------------------
+# Resolution precedence (highest wins):
+#   1. env var   AI_USAGE_ROOT          (e.g. export AI_USAGE_ROOT=/Volumes/Data/ai)
+#   2. this      data_root              (set it below)
+#   3. built-in  ~/Desktop/ai-usage-report
+data_root: ~/Desktop/ai-usage-report
