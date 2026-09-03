@@ -86,16 +86,15 @@ def mask_account_name(name):
         return s
     # Email: mask the local part but keep the domain so accounts stay
     # distinguishable (kylinlab@example.com -> ky***b@example.com).
-    em = re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s)
-    if em:
-        local = em.group(1)
+    if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s):
+        local, _, domain = s.partition("@")
         if len(local) <= 2:
             masked_local = local[0] + "*"
         elif len(local) <= 4:
             masked_local = local[0] + "*" * (len(local) - 1)
         else:
             masked_local = local[0] + "*" * (len(local) - 2) + local[-1]
-        return f"{masked_local}@{em.group(2)}"
+        return f"{masked_local}@{domain}"
     if re.search(r"[一-鿿]", s):  # contains CJK
         n = len(s)
         if n <= 1:

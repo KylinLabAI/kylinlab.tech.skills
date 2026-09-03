@@ -14,7 +14,7 @@ Usage:
   python3 cross_platform_report.py [--days 30] [--start 2026-07-13] [--end 2026-08-11]
 
 Output (per request range):
-  report/<start>_<end>/summary/summary.html   # cross-vendor combined report
+  report/<start>_<end>/summary/report.html   # cross-vendor combined report
   (per-vendor reports are produced by build_report.py under report/<start>_<end>/<platform>/)
 """
 import argparse
@@ -183,7 +183,7 @@ Qoder/DeepSeek 为美元/额度，TRAE/CodeBuddy 为积分(points)。
 </table>
 </body></html>"""
 
-    out = os.path.join(req_dir, "summary", "summary.html")
+    out = os.path.join(req_dir, "summary", "report.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)

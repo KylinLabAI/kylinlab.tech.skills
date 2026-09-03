@@ -14,7 +14,7 @@ Multi-account: a platform can hold several accounts, each with its own folder
 (data/<platform>/<account>/). Pick one with `--account <name>` (report at
 report/<start>_<end>/<platform>/<account>/), or pass `--account all` to
 aggregate every account into a single vendor report
-(report/<start>_<end>/<platform>/_all/).
+(report/<start>_<end>/<platform>/report.html).
 
 Usage:
     python3 build_report.py --platform qoder [--start 2026-08-01] [--end 2026-08-15]
@@ -230,7 +230,7 @@ def main():
     e = req_end or max(datetime.strptime(r["date"], "%Y-%m-%d").date()
                        for r in rows if r.get("date"))
     if all_accounts:
-        out_dir = data_store.platform_report_dir(platform, "_all", s, e)
+        out_dir = data_store.platform_report_dir(platform, None, s, e)
     elif account:
         out_dir = data_store.platform_report_dir(platform, account, s, e)
     else:
