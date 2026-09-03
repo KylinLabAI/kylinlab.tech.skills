@@ -1,7 +1,11 @@
 # =============================================================================
-# AI Token Usage - User configuration
+# AI Token Usage - User configuration (TEMPLATE)
 # =============================================================================
-# This file lets you configure the skill WITHOUT editing any code.
+# This file is committed. Copy it to `config.yaml` (same folder) and edit the
+# copy — `config.yaml` is git-ignored so your local path is never committed.
+#
+#   cp configs/config.yaml.template configs/config.yaml
+#
 # All paths are expanded for ~ and may be absolute or relative to your home.
 # Edit, save, and re-run — no reinstall needed.
 
@@ -12,8 +16,8 @@
 # -----------------------------------------------------------------------------
 # Resolution precedence (highest wins):
 #   1. env var   AI_TOKEN_USAGE_ROOT      (e.g. export AI_TOKEN_USAGE_ROOT=/Volumes/Data/ai)
-#   2. this       output_dir              (set it below)
-#   3. built-in   ~/Desktop/ai-token-usage
+#   2. this      output_dir               (set it below)
+#   3. built-in  ~/Desktop/ai-token-usage
 #
 # CLI --output-dir still wins over everything when explicitly passed.
 output_dir: ~/Desktop/ai-token-usage
