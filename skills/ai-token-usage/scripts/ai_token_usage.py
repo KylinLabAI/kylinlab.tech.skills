@@ -123,6 +123,48 @@ def default_host() -> str:
     return mask_host(real_hostname())
 
 
+def _load_user_config() -> dict:
+    """Load the user-editable ``configs/config.yaml`` (sibling of this script's
+    parent dir). Returns ``{}`` when missing or unreadable so callers fall back
+    to the env var / built-in default.  Mirrors ``ai-usage-report``."""
+    cfg_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "configs", "config.yaml",
+    )
+    if not os.path.exists(cfg_path):
+        return {}
+    try:
+        import yaml
+        with open(cfg_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+_CONFIG = _load_user_config()
+
+
+def resolve_output_dir(cli_value: str | None) -> str:
+    """Resolve the report output root with precedence (highest wins):
+
+        1. CLI ``--output-dir`` (when explicitly passed)
+        2. env  ``AI_TOKEN_USAGE_ROOT``
+        3. ``config.yaml`` ``output_dir``   (user-editable, no code change)
+        4. built-in ``~/Desktop/ai-token-usage``
+
+    ``data/`` is co-located under this dir unless ``--data-dir`` overrides it.
+    """
+    root = cli_value
+    if not root:
+        root = os.environ.get("AI_TOKEN_USAGE_ROOT")
+    if not root:
+        root = _CONFIG.get("output_dir")
+    if not root:
+        root = os.path.join(os.path.expanduser("~/Desktop"), "ai-token-usage")
+    return os.path.expanduser(root)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Report combined AI token usage from Copilot (VS Code) and Codex (CLI)."
@@ -211,9 +253,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="~/Desktop/ai-token-usage",
-        help="Directory for the saved .md report and trend chart image "
-             "(default: ~/Desktop/ai-token-usage). Created if missing.",
+        default=None,
+        help="Directory for the saved .md report and trend chart image. "
+             "Resolved with precedence: this flag > env AI_TOKEN_USAGE_ROOT > "
+             "config.yaml output_dir > built-in ~/Desktop/ai-token-usage. "
+             "Created if missing.",
     )
     parser.add_argument(
         "--no-save",
@@ -314,10 +358,10 @@ def analyze_current_session(session_path: Path) -> CurrentSessionUsage:
 def main() -> int:
     args = parse_args()
 
-    # Resolve the persistent raw-data store under the target (output) dir so it
-    # lives with the reports, not inside the skill. --data-dir can still
-    # override this explicitly.
-    output_root = Path(os.path.expanduser(args.output_dir)).resolve()
+    # Resolve the report output dir from CLI > env > config.yaml > built-in
+    # default, then co-locate the persistent raw-data store under it (unless
+    # --data-dir overrides explicitly).
+    output_root = Path(resolve_output_dir(args.output_dir)).resolve()
     args.data_dir = args.data_dir or str(output_root / "data")
 
     # Force UTF-8 output streams. On Windows the default console encoding (e.g.

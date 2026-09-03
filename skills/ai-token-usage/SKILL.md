@@ -158,7 +158,7 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--current-session` | false | Show context usage for the current (most recent) Copilot, Codex, or Claude Code session |
 | `--session-file` | — | Path to a specific session JSONL file (with `--current-session`) |
 | `--currency` | CNY | Display currency for cost estimates: `USD`, `CNY`, or `RMB`. Default is CNY (RMB); the trend chart's cost panel is always RMB regardless. |
-| `--output-dir` | `~/Desktop/ai-token-usage` | Target directory (created if missing). The data store and reports are both saved under this dir: `<output-dir>/data` and `<output-dir>/report/<timestamp>`. |
+| `--output-dir` | `~/Desktop/ai-token-usage` | Target directory (created if missing). The data store and reports are both saved under this dir: `<output-dir>/data` and `<output-dir>/report/<timestamp>`. Resolved via CLI > env `AI_TOKEN_USAGE_ROOT` > `config.yaml` `output_dir` > built-in default. |
 | `--no-save` | false | Do not write the `.md` report / chart image; print only. |
 | `--data-dir` | `<output-dir>/data` | Persistent raw-data CSV store, co-located with the report under the target dir (NOT inside the skill). Merged across runs so history accumulates in `data/data.csv` + per-host/per-agent `data/<host>/<group>/data.csv`. |
 | `--host` | local hostname | Machine label written on local rows in the data store. Same `session_key` from two hosts stays distinct. |
@@ -169,6 +169,21 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--vscode-data` | auto | VS Code user-data directory |
 | `--codex-home` | ~/.codex | Codex home directory |
 | `--claude-projects-dir` | ~/.claude/projects | Claude Code projects directory |
+
+### Configuring the output path
+
+The output root is **user-configurable without editing code**, via
+`configs/config.yaml` (`output_dir`) or the `AI_TOKEN_USAGE_ROOT` environment
+variable. Resolution precedence (highest wins):
+
+1. `--output-dir` (CLI flag, when explicitly passed)
+2. env var `AI_TOKEN_USAGE_ROOT`
+3. `configs/config.yaml` `output_dir` (user-editable)
+4. built-in default `~/Desktop/ai-token-usage`
+
+`data/` is co-located under this dir unless `--data-dir` overrides it. Edit
+`config.yaml`, save, and re-run — no reinstall needed. This mirrors the
+`ai-usage-report` skill's `data_root` / `AI_USAGE_ROOT` mechanism.
 
 ### Saved report file (default behavior)
 

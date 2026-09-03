@@ -1,0 +1,19 @@
+# =============================================================================
+# AI Token Usage - User configuration
+# =============================================================================
+# This file lets you configure the skill WITHOUT editing any code.
+# All paths are expanded for ~ and may be absolute or relative to your home.
+# Edit, save, and re-run — no reinstall needed.
+
+# -----------------------------------------------------------------------------
+# Root directory for generated reports AND the persistent raw-data store.
+#   report/    -> dated .md report + trend chart + raw JSON (one folder/run)
+#   data/      -> persistent raw-data CSV store (merged across runs)
+# -----------------------------------------------------------------------------
+# Resolution precedence (highest wins):
+#   1. env var   AI_TOKEN_USAGE_ROOT      (e.g. export AI_TOKEN_USAGE_ROOT=/Volumes/Data/ai)
+#   2. this       output_dir              (set it below)
+#   3. built-in   ~/Desktop/ai-token-usage
+#
+# CLI --output-dir still wins over everything when explicitly passed.
+output_dir: ~/Desktop/ai-token-usage
