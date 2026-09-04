@@ -147,7 +147,11 @@ for backwards compatibility.
   listing any other accounts it found.
 - **Cross-platform summary** — `cross_platform_report.py` lists each
   (platform, account) as its own column, so multi-account data is never hidden
-  behind another account's rows.
+  behind another account's rows. It also renders the **same charts as the
+  per-platform report but merged across all platforms** (daily request/cost
+  trend, free-vs-paid pie, model distribution, task type), plus two summary-only
+  pies: **折算费用(RMB) 各平台占比** and **请求次数 各平台占比**. All cost
+  charts use RMB (units.json) so they are comparable; request counts are summed.
 
 ```bash
 # Capture each account into its own cookie profile (placeholder label).
