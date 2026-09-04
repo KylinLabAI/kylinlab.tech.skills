@@ -78,7 +78,10 @@ def plot_pie(values, labels, colors, title, out_dir, name, others_pct=1.0):
         return save(fig, out_dir, name)
     final_colors = list(colors)[:len(vals)]
     while len(final_colors) < len(vals):
-        final_colors.append("#bdbdbd")  # neutral grey for the merged "Others"
+        final_colors.append("#bdbdbd")  # neutral grey for overflow slices
+    # The merged "Others" slice is always last and must be visually distinct.
+    if labels and labels[-1] == "Others":
+        final_colors[-1] = "#bdbdbd"
     fig, ax = plt.subplots(figsize=(6, 5))
     ax.pie(vals, labels=labels, autopct="%1.1f%%", colors=final_colors,
            startangle=90, textprops={"fontsize": 9})

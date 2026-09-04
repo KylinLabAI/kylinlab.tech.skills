@@ -219,10 +219,12 @@ def main():
         charts.plot_pie([platform_cost_rmb[p] for p in plats_present],
                         [f"{LABEL[p]}\n{round(platform_cost_rmb[p], 1)}"
                          for p in plats_present],
-                        _pc, "折算费用(RMB) 各平台占比", sum_dir, "pie_platform_cost.png")
+                        _pc, "折算费用(RMB) 各平台占比", sum_dir, "pie_platform_cost.png",
+                        others_pct=0)
         charts.plot_pie([platform_n[p] for p in plats_present],
                         [f"{LABEL[p]}\n{platform_n[p]}" for p in plats_present],
-                        _pc, "请求次数 各平台占比", sum_dir, "pie_platform_request.png")
+                        _pc, "请求次数 各平台占比", sum_dir, "pie_platform_request.png",
+                        others_pct=0)
         charts_md = f"""
 ## 图表概览（全平台合并）
 
