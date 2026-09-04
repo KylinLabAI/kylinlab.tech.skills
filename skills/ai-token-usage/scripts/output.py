@@ -268,8 +268,14 @@ def _format_tick(value: float, _pos: Any = None) -> str:
     return str(int(value))
 
 
-def _draw_share_pie(ax, title: str, mapping: dict, value_fmt) -> None:
-    """Draw a single share pie (usage split across labels) into ``ax``."""
+def _draw_share_pie(ax, title: str, mapping: dict, value_fmt, others_threshold: float = 0.01) -> None:
+    """Draw a single share pie (usage split across labels) into ``ax``.
+
+    Categories whose share of the total is below ``others_threshold`` (default
+    1%) are merged into a single "Others" slice, so a long tail of tiny models
+    / hosts / agents stays readable instead of turning into an unlabeled
+    sliver salad.
+    """
     import matplotlib.pyplot as plt
     cmap = plt.colormaps["tab10"]
     items = {k: v for k, v in mapping.items() if v}
@@ -277,7 +283,18 @@ def _draw_share_pie(ax, title: str, mapping: dict, value_fmt) -> None:
         ax.axis("off")
         ax.set_title(title, fontweight="bold")
         return
+    total = sum(items.values())
+    # Keep slices >= threshold; fold everything smaller into "Others".
+    big = {k: v for k, v in items.items() if v / total >= others_threshold}
+    small_total = sum(v for v in items.values() if v / total < others_threshold)
+    if small_total > 0:
+        big["Others"] = big.get("Others", 0) + small_total
+        items = big
     labels = sorted(items, key=lambda x: -items[x])
+    # Conventional: park the "Others" slice at the end of the legend/order.
+    if "Others" in labels:
+        labels.remove("Others")
+        labels.append("Others")
     sizes = [items[k] for k in labels]
     ax.pie(
         sizes,

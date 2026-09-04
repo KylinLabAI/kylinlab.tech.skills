@@ -399,13 +399,20 @@ def aggregate_store(data_dir, start, end, agent_filter: str | None = None) -> di
             continue
         model = (r.get("model") or "").strip()
         agent = (r.get("agent") or "").strip()
+        # The store's ``input_tokens`` already includes ``cache_read_tokens``:
+        # the live scan folds cache into the displayed input via UsageBucket.add.
+        # Pass only the standard (non-cache) portion so add_usage re-folds it
+        # exactly once. Passing the folded input AND cache_read would double-count
+        # cache (the 2.69B-vs-1.39B inflation bug).
+        stored_in = int(r.get("input_tokens") or 0)
+        stored_cache = int(r.get("cache_read_tokens") or 0)
         add_usage(
             daily, per_session, per_model, per_agent,
-            int(r.get("input_tokens") or 0), int(r.get("output_tokens") or 0),
+            max(0, stored_in - stored_cache), int(r.get("output_tokens") or 0),
             sk, model, agent, ts,
             daily_agent, daily_model, per_agent_model, daily_agent_model,
             turns=int(r.get("turns") or 0),
-            cache_read=int(r.get("cache_read_tokens") or 0),
+            cache_read=stored_cache,
         )
         if sk not in session_infos:
             session_infos[sk] = SessionInfo(
@@ -636,24 +643,32 @@ def main() -> int:
         # Fold in-range imported rows into the in-memory aggregation. This is
         # only needed as a fallback for --no-raw-data runs (where the store is
         # NOT written and we report the in-memory result instead). For normal
-        # runs the store is the source of truth and is read back below.
-        for _r in imported_rows:
-            _ts = parse_timestamp(_r["started_at"])
-            if _ts is None or _ts < start or _ts >= end:
-                continue
-            _sk = _r["session_key"]
-            session_infos[_sk] = SessionInfo(
-                session_key=_sk, agent=_r["agent"], model=_r["model"],
-                task=_r["task"], started_at=_r["started_at"], cwd=_r["cwd"],
-                host=_r["host"],
-            )
-            add_usage(
-                daily, per_session, per_model, per_agent,
-                _r["input_tokens"], _r["output_tokens"], _sk, _r["model"],
-                _r["agent"], _ts, daily_agent, daily_model,
-                per_agent_model, daily_agent_model,
-                turns=_r["turns"], cache_read=_r["cache_read_tokens"],
-            )
+        # runs the store is the source of truth: merge_rows_into_store above
+        # already persisted the imported rows under their own host, and reading
+        # the store back below covers them. Folding them in here too would make
+        # update_data_store re-write them under local_host and double-count them.
+        if args.no_raw_data:
+            for _r in imported_rows:
+                _ts = parse_timestamp(_r["started_at"])
+                if _ts is None or _ts < start or _ts >= end:
+                    continue
+                _sk = _r["session_key"]
+                session_infos[_sk] = SessionInfo(
+                    session_key=_sk, agent=_r["agent"], model=_r["model"],
+                    task=_r["task"], started_at=_r["started_at"], cwd=_r["cwd"],
+                    host=_r["host"],
+                )
+                # Imported rows carry already-folded input_tokens (same convention
+                # as the store), so strip cache before add_usage re-folds it.
+                _stored_in = int(_r.get("input_tokens") or 0)
+                _stored_cache = int(_r.get("cache_read_tokens") or 0)
+                add_usage(
+                    daily, per_session, per_model, per_agent,
+                    max(0, _stored_in - _stored_cache), _r["output_tokens"], _sk, _r["model"],
+                    _r["agent"], _ts, daily_agent, daily_model,
+                    per_agent_model, daily_agent_model,
+                    turns=_r["turns"], cache_read=_stored_cache,
+                )
 
     # --- Persistent raw-data store (merged across runs) ---
     # Every in-range session scanned locally is upserted into data/data.csv.
