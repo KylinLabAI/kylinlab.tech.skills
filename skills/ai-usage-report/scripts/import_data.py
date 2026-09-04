@@ -298,18 +298,13 @@ def main():
                                      account=label)
     print(f"[import] merged {len(all_rows)} rows -> {path}")
 
-    # Record meta for reference.
-    meta = {
-        "name": label,
-        "masked": True,
-        "source": "import",
-        "imported_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    d = data_store.platform_data_dir(platform, label)
-    with open(os.path.join(d, "account.json"), "w", encoding="utf-8") as f:
-        import json
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-    print(f"[import] data dir: {d}")
+    # Record meta, preserving any coverage span merge_and_save() just wrote.
+    data_store.write_account_meta(
+        platform, label,
+        name=label, masked=True, source="import",
+        imported_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    print(f"[import] data dir: {data_store.platform_data_dir(platform, label)}")
     print(f"        next: python3 build_report.py --platform {platform} "
           f"--account {label}")
 

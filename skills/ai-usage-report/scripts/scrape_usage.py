@@ -61,7 +61,10 @@ PLATFORM_KEYWORDS = {
 # like auto_1). The cookie/login profile stays a placeholder (--account), only the
 # on-disk data folder uses the masked real name.
 PROFILE_URLS = {
-    "deepseek": ("https://platform.deepseek.com/profile", "用户名"),
+    # A platform may supply a list of candidate labels (tried in order) to be
+    # robust against SPA label wording differences ("名称" vs "用户名" vs "昵称").
+    "deepseek": ("https://platform.deepseek.com/profile",
+                 ["名称", "用户名", "昵称"]),
     "codebuddy": ("https://www.codebuddy.cn/profile/account-settings", "账号名称"),
     "qoder": ("https://qoder.com.cn/account/profile", "名称"),
     "trae": ("https://www.trae.cn/dashboard#account", "昵称"),
@@ -160,11 +163,29 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 
 def _extract_email(text):
-    """Return the first email address found in `text`, or None."""
+    """Return the first *usable* email address found in `text`, or None.
+
+    Self-masked addresses (e.g. DeepSeek shows "kyl******026@qq.com" with
+    asterisks) are NOT usable identities. Two failure modes must be avoided:
+      1) the whole address contains `*`, and
+      2) the regex matches only the *tail* of a masked address — "kyl******026@
+         qq.com" yields the fragment "026@qq.com" (no `*` in that substring).
+    So we also reject any candidate whose preceding character is a mask glyph
+    (`*`/`•`), which means it is the tail of a masked email. With both checks
+    the function returns None for masked addresses and we fall through to the
+    account's clean display name instead.
+    """
     if not text:
         return None
-    m = _EMAIL_RE.search(text)
-    return m.group(0) if m else None
+    for m in _EMAIL_RE.finditer(text):
+        cand = m.group(0)
+        if "*" in cand:
+            continue
+        start = m.start()
+        if start > 0 and text[start - 1] in "*•":
+            continue
+        return cand
+    return None
 
 
 def _detect_via_profile_dom_legacy(page, label):
@@ -321,12 +342,15 @@ def _detect_account_name(page, platform):
             return email
     except Exception:
         pass
-    # 3) Profile-page DOM query (robust): navigate, then try email, then label
-    #    via a live DOM read, then a flattened-text regex fallback.
+    # 3) Profile-page DOM query (robust): navigate, then try the candidate
+    #    labels (live DOM read, then flattened-text regex), preferring the
+    #    account's DISPLAY NAME over a possibly self-masked email.
     info = PROFILE_URLS.get(plat)
     if not info:
         return None
-    url, label = info
+    url, labels = info
+    if isinstance(labels, str):
+        labels = [labels]
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
     except Exception:
@@ -338,14 +362,19 @@ def _detect_account_name(page, platform):
         page.wait_for_timeout(4000)
     except Exception:
         pass
-    dom = _detect_via_profile_dom(page, label)
-    if dom:
-        return dom
     text = _page_text(page)
+    for label in labels:
+        dom = _detect_via_profile_dom(page, label)
+        if dom:
+            return dom
     email = _extract_email(text)
     if email:
         return email
-    return _extract_profile_value(text, label)
+    for label in labels:
+        val = _extract_profile_value(text, label)
+        if val:
+            return val
+    return None
 
 
 def _is_placeholder(label):
@@ -1902,6 +1931,7 @@ def _write_account_meta(platform, label, source_url=None, account_id=None):
     meta.update({
         "name": label,
         "masked": True,
+        "source": "scrape",
         "source_url": source_url,
         "detected_at": datetime.now().isoformat(timespec="seconds"),
     })

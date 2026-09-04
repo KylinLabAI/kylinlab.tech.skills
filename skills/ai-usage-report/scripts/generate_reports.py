@@ -49,6 +49,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="pass --force to per-vendor builds so a verify ❌ does "
                          "not abort that vendor's report")
+    ap.add_argument("--no-fetch", dest="no_fetch", action="store_true",
+                    help="build reports from the existing cache only; never "
+                         "auto-scrape the platforms (use after fixing the store)")
     args = ap.parse_args()
 
     run_id = args.out or datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -76,6 +79,8 @@ def main():
                "--out", run_id] + range_args
         if args.force:
             cmd.append("--force")
+        if args.no_fetch:
+            cmd.append("--no-fetch")
         rc = subprocess.run(cmd).returncode
         if rc != 0:
             print(f"[gen] ⚠ {p} build failed (rc={rc}); summary still includes it.")

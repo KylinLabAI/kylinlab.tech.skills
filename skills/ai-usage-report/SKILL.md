@@ -25,6 +25,17 @@ If a browser capture misses >50% of the requested days, the report is aborted
 unless `--force` is given. This prevents the silent data-loss bug that
 affected Qoder captures before Aug 2026.
 
+**Out-of-window guard**: some platforms' usage APIs ignore the requested date
+range and return a *recent* window instead (e.g. TRAE's
+`query_user_usage_group_by_session` has returned 9/2–9/3 when asked for
+8/1–8/29). `merge_and_save()` now **drops any captured record whose date falls
+outside the requested `[start, end]`** before persisting, and prints a
+`[store] ⚠ dropped N out-of-range record(s)` warning. This stops out-of-window
+rows from polluting the wrong month (e.g. 2026-09.csv) or inflating
+`covered_range()` so a real gap looks filled. After an auto-fetch,
+`build_report.py` re-checks coverage and warns if the gap is still open.
+Never manually edit the monthly CSVs to "fix" a gap — re-run the scraper.
+
 ## Initialization Contract
 
 If the user asks to initialize, set up, or install tools for this skill, run
@@ -80,6 +91,13 @@ This lets the skill:
 - **Isolation**: every account is a fully separate store — its raw exports,
   captures, coverage gaps, and report never touch another account, so three
   CodeBuddy accounts never overwrite or silently merge into each other.
+- **Coverage metadata + default auto-fetch**: each account's covered date range
+  is cached in `account.json` as `covered_range` (the coverage check prefers it,
+  else scans the real CSVs and writes it back). When a requested range is only
+  partially cached, `build_report.py` auto-fetches the missing gaps by default
+  (`--no-fetch` to disable). External-import accounts (`account.json` `source ==
+  "import"`) are never scraped — the build reminds you to `import_data.py` the
+  external export instead.
 
 **Per-request RAW snapshot.** Every `scrape_usage.py` run also writes an
 *un-merged, un-deduped* copy of what it captured that run, one CSV per request:
@@ -105,12 +123,13 @@ python3 scrape_usage.py --platform qoder --url <url> --start 2026-08-10 --end 20
 # Later ask for 7/15~8/15 → fully cached, NO fetch, report built from disk
 python3 build_report.py --platform qoder --start 2026-07-15 --end 2026-08-15
 
-# Auto-fill any missing gaps then build the report
-python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-31 --auto-fetch
+# Missing gaps are auto-fetched by default; --no-fetch builds from cache only
+python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-31
 ```
 
 `data_store.py` API:
 `covered_dates(p, account)`, `missing_ranges(start,end,p,account)`,
+`covered_range(p, account)`, `is_imported(p, account)`,
 `merge_and_save(p,records,start,end,account)`,
 `load_consolidated(p,start,end,account)`, `list_accounts(p)`.
 

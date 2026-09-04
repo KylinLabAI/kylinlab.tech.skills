@@ -49,18 +49,9 @@ def _is_imported(platform, account):
     """An account whose data came from an imported/exported file (per its
     account.json `source` field) is authoritative: a missing day means zero
     usage, NOT a dropped scrape page. Treat it like an official export for the
-    gate, so narrow/short exports don't trip the "incomplete capture" ERROR."""
-    try:
-        d = data_store.platform_data_dir(platform, account)
-        meta = os.path.join(d, "account.json")
-        if os.path.exists(meta):
-            import json
-            with open(meta, encoding="utf-8") as f:
-                if str(json.load(f).get("source", "")).lower() == "import":
-                    return True
-    except Exception:
-        pass
-    return False
+    gate, so narrow/short exports don't trip the "incomplete capture" ERROR.
+    Delegated to data_store.is_imported (single source of truth)."""
+    return data_store.is_imported(platform, account)
 
 
 def verify(platform, req_start=None, req_end=None, account=None):

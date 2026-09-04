@@ -588,6 +588,78 @@ def missing_ranges(req_start, req_end, platform, account=None, force_days=None):
     return missing
 
 
+# ---- account metadata (coverage span + import/scrape provenance) ----------
+def account_meta_path(platform, account):
+    """Path of account.json (coverage + provenance metadata) for an account."""
+    return os.path.join(platform_data_dir(platform, account), "account.json")
+
+
+def read_account_meta(platform, account):
+    """Load account.json metadata; returns {} when missing or unreadable."""
+    p = account_meta_path(platform, account)
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                m = json.load(f)
+            if isinstance(m, dict):
+                return m
+        except Exception:
+            pass
+    return {}
+
+
+def write_account_meta(platform, account, **updates):
+    """Merge `updates` into account.json, preserving other keys, and write it."""
+    m = read_account_meta(platform, account)
+    if "name" not in m:
+        m["name"] = safe_account(account) or ""
+    m.update(updates)
+    p = account_meta_path(platform, account)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(m, f, ensure_ascii=False, indent=2)
+    return m
+
+
+def is_imported(platform, account):
+    """True when an account's data came from an external/imported file
+    (account.json `source == 'import'`). Such accounts CANNOT be pulled from the
+    platform — report generation must skip scraping them and instead remind the
+    user to import the external export."""
+    return str(read_account_meta(platform, account).get("source", "")).lower() == "import"
+
+
+def refresh_coverage_meta(platform, account=None):
+    """Recompute the covered date span from real CSV data and persist it as
+    `covered_range` in account.json. Returns (start, end) or None when empty."""
+    dates = covered_dates(platform, account)
+    if not dates:
+        return None
+    s, e = min(dates), max(dates)
+    write_account_meta(platform, account,
+                       covered_range=[s.strftime(DATE_FMT), e.strftime(DATE_FMT)])
+    return s, e
+
+
+def covered_range(platform, account=None, persist=True):
+    """Return the (start_date, end_date) span of cached data for one account.
+
+    Uses the persisted `covered_range` meta (O(1)) when present; otherwise scans
+    the real CSV data (covered_dates) and — when `persist` — writes the span back
+    into account.json so the next coverage check is O(1). Returns (None, None)
+    when there is no data yet.
+    """
+    cr = read_account_meta(platform, account).get("covered_range")
+    if isinstance(cr, (list, tuple)) and len(cr) == 2:
+        s, e = _d(cr[0]), _d(cr[1])
+        if s and e:
+            return s, e
+    if not persist:
+        dates = covered_dates(platform, account)
+        return (min(dates), max(dates)) if dates else (None, None)
+    return refresh_coverage_meta(platform, account) or (None, None)
+
+
 def load_consolidated(platform, req_start=None, req_end=None, account=None):
     """Return combined, deduped record dicts for one platform account
     (optionally clipped to a requested range).
@@ -668,6 +740,29 @@ def merge_and_save(platform, new_records, req_start=None, req_end=None,
     # Source rows = the new capture plus any legacy range files still on disk.
     legacy = [(s, e, p) for (s, e, p) in list_data_files(platform, acc or None)
               if _RE_RANGE.match(os.path.basename(p))]
+
+    # Guard against out-of-window captures. Some platforms' usage APIs ignore
+    # the requested date range and return a *recent* window instead (e.g. TRAE's
+    # query_user_usage_group_by_session returned 9/2-9/3 when asked for
+    # 8/1-8/29). Without this, those rows would be bucketed into the WRONG
+    # month (polluting e.g. 2026-09.csv) and inflate covered_range(), leaving
+    # the real gap silently unfilled. We only persist records inside the
+    # requested window; legacy rows are already-validated data and kept as-is.
+    if req_start and req_end:
+        kept, dropped = [], []
+        for r in new_records:
+            dd = _d(r.get("date", ""))
+            if dd and req_start <= dd <= req_end:
+                kept.append(r)
+            else:
+                dropped.append(r)
+        if dropped:
+            sample = [str(r.get("date", "?")) for r in dropped[:5]]
+            print(f"[store] ⚠ dropped {len(dropped)} out-of-range record(s) "
+                  f"outside {req_start}~{req_end} (e.g. {', '.join(sample)}); "
+                  f"not persisted.")
+        new_records = kept
+
     all_rows = list(new_records)
     for _s, _e, p in legacy:
         all_rows.extend(_read_rows(p))
@@ -709,4 +804,13 @@ def merge_and_save(platform, new_records, req_start=None, req_end=None,
     if not written:
         print(f"[store] no dated rows to persist for {platform}"
               + (f"/{acc}" if acc else ""))
+
+    # Persist the covered date span so the next coverage check is O(1): the
+    # `covered_range` meta in account.json backs the real-data scan used by
+    # covered_range()/missing_ranges(). Written on every pull/import.
+    try:
+        refresh_coverage_meta(platform, acc or None)
+    except Exception:
+        pass
+
     return written[-1] if written else account_dir

@@ -86,12 +86,35 @@ def _load_all_accounts(platform, req_start, req_end):
 
 
 def _auto_fetch(platform, req_start, req_end, no_backfill=False, account=None):
-    """Trigger scrape_usage.py for missing gaps only (per account).
+    """Fill missing gaps for one account before building the report.
 
-    By default the previous pull's final day is force re-fetched (backfilled),
-    because it may have been captured mid-day and is only partially complete.
+    - Refresh the persisted covered_range meta from real data (so the next
+      coverage check is O(1)).
+    - External-import accounts (account.json `source == 'import'`) can NOT be
+      pulled from the platform: we never scrape them; instead we report the
+      missing range and remind the user to import the external export.
+    - Otherwise we trigger scrape_usage.py for the missing gaps. By default the
+      previous pull's final day is force re-fetched (backfilled) because it may
+      have been captured mid-day and is only partially complete.
     """
     label = platform if not account else f"{platform}/{account}"
+    # Keep the coverage meta fresh for every build (covers the read-only case).
+    data_store.covered_range(platform, account, persist=True)
+
+    if data_store.is_imported(platform, account):
+        gaps = data_store.missing_ranges(req_start, req_end, platform,
+                                         account=account)
+        if gaps:
+            g0, g1 = gaps[0][0], gaps[-1][1]
+            print(f"[build] {label}: 外部导入账号，无法从平台拉取。缺失区间 "
+                  f"{g0}~{g1}（{len(gaps)} 段）。")
+            print(f"        请获取该账号的导出文件并导入：")
+            print(f"        python3 import_data.py --platform {platform} "
+                  f"--account {account} --file <导出文件>")
+        else:
+            print(f"[build] {label}: 外部导入账号，范围内数据齐全，跳过拉取。")
+        return
+
     force = set()
     if not no_backfill:
         prev_last = data_store.last_covered_date(platform, account)
@@ -118,6 +141,18 @@ def _auto_fetch(platform, req_start, req_end, no_backfill=False, account=None):
         cmd += ["--account", account]
     subprocess.run(cmd, check=True)
 
+    # Re-check coverage after the fetch. If a gap is still open, the platform
+    # likely returned out-of-range (ignored the date range) or empty data. Do
+    # NOT pretend the gap was filled — warn so the report's missing-data caveat
+    # stays honest instead of silently covering a hole.
+    still = data_store.missing_ranges(req_start, req_end, platform,
+                                      account=account)
+    if still:
+        print(f"[build] ⚠ {label}: auto-fetch ran but {len(still)} gap(s) still "
+              f"open (e.g. {still[0][0]}~{still[-1][1]}). The platform may have "
+              f"returned out-of-range/empty data; the report will flag this as "
+              f"missing, not silently cover it.")
+
 
 def _platform_url(platform):
     cfg = os.path.join(HERE, "..", "configs", "urls.json")
@@ -136,7 +171,10 @@ def main():
     ap.add_argument("--end", default=None, help="yyyy-mm-dd; default: latest cached")
     ap.add_argument("--all", action="store_true", help="use the full cached range")
     ap.add_argument("--auto-fetch", action="store_true",
-                    help="fetch missing date gaps before building")
+                    help="(default on) explicitly enable fetching missing gaps")
+    ap.add_argument("--no-fetch", dest="no_fetch", action="store_true",
+                    help="disable auto-fetch; build the report from the existing "
+                         "cache only (never scrape the platform)")
     ap.add_argument("--force", action="store_true",
                     help="skip the integrity-verify gate (use with caution)")
     ap.add_argument("--no-backfill", action="store_true",
@@ -150,6 +188,7 @@ def main():
                          "timestamp YYYY-MM-DD_HH-MM-SS. Use the same value as "
                          "cross_platform_report.py so the summary links resolve.")
     args = ap.parse_args()
+    do_fetch = args.auto_fetch or (not args.no_fetch)
 
     platform = args.platform
     all_accounts = str(args.account or "").lower() == ALL_ACCOUNTS
@@ -160,9 +199,10 @@ def main():
         files = files or [f for acc in data_store.list_accounts(platform)
                           for f in data_store.list_data_files(platform, acc)]
     if not files:
-        print(f"[build] no cached data for {platform}. "
-              f"Run scrape_usage.py first or use --auto-fetch.")
-        if not args.auto_fetch:
+        print(f"[build] no cached data for {platform}.")
+        if not do_fetch:
+            print(f"        (auto-fetch disabled; run scrape_usage.py or "
+                  f"import_data.py first.)")
             return
         # nothing cached: need a range to fetch
         if not (args.start and args.end):
@@ -181,7 +221,7 @@ def main():
             req_start = min(s for s, _e, _p in files)
             req_end = max(e for _s, e, _p in files)
 
-    if args.auto_fetch and req_start and req_end:
+    if do_fetch and req_start and req_end:
         accounts = data_store.list_accounts(platform) if all_accounts else [account]
         for acc in accounts:
             _auto_fetch(platform, req_start, req_end,

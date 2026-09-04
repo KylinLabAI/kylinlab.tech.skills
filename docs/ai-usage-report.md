@@ -79,6 +79,15 @@ This enables **reuse** (skip fetch if range is cached), **incremental fetch**
 fetches, and **isolation** (each account is a separate store — three CodeBuddy
 accounts never overwrite or silently merge into each other).
 
+Each account's covered date range is cached as `covered_range` in
+`data/<platform>/<account>/account.json`; coverage checks prefer this meta and
+fall back to scanning the real CSVs when absent (then write it back). When a
+requested range is only partially cached, `build_report.py` **auto-fetches the
+missing gaps by default** (pass `--no-fetch` to disable). Accounts whose
+`account.json` has `source == "import"` are *external-import* accounts: they can
+never be pulled from the platform, so the build skips scraping them and instead
+reminds you to import the external export file.
+
 > The dedup key deliberately excludes `prompt`: platforms reformat the prompt
 > preview between pulls (e.g. adding a `[client]` prefix), so including it
 > would break dedup and double-count re-fetched days. It does include
@@ -249,13 +258,17 @@ behavior.
 Build from the persistent store (recommended), with auto-fill of missing gaps:
 
 ```bash
-python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-15 [--auto-fetch]
+# Auto-fetch missing gaps is ON by default; --no-fetch builds from cache only.
+python3 build_report.py --platform qoder --start 2026-08-01 --end 2026-08-15 [--no-fetch]
 ```
 
 Flags:
 - `--out DIR`: output folder (default `~/Desktop/<input>_report` for one-shot;
   `~/Desktop/ai-usage-report/report/<s>_<e>/<platform>/` for store).
-- `--auto-fetch`: fill missing date gaps via the scraper before building.
+- `--auto-fetch` (default on): fill missing date gaps via the scraper before
+  building. External-import accounts (`account.json` `source == "import"`) are
+  skipped and you are reminded to import the export instead.
+- `--no-fetch`: build the report from the existing cache only; never scrape.
 - `--account <label>`: scope every operation to one account
   (`scrape_usage.py` / `verify_data.py` / `build_report.py`). Use `all` with
   `build_report.py` to aggregate every account into one report with a per-account
