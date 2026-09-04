@@ -41,11 +41,11 @@ def plot_daily_count(labels, n, paid, free, out_dir):
     return save(fig, out_dir, "daily_count.png")
 
 
-def plot_daily_cost(labels, cost, out_dir):
+def plot_daily_cost(labels, cost, out_dir, unit="元(RMB)"):
     fig, ax = plt.subplots(figsize=(9, 4.5))
-    ax.plot(labels, cost, marker="o", label="费用(积分/元)", color="#d95f0e", linewidth=2)
+    ax.plot(labels, cost, marker="o", label="费用", color="#d95f0e", linewidth=2)
     ax.set_title("每日费用趋势")
-    ax.set_xlabel("日期"); ax.set_ylabel("费用")
+    ax.set_xlabel("日期"); ax.set_ylabel(f"费用 ({unit})")
     ax.legend(); fig.autofmt_xdate()
     return save(fig, out_dir, "daily_cost.png")
 

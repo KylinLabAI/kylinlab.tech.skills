@@ -258,12 +258,13 @@ def main():
     elif warnings:
         print("[build] ⚠ 校验有警告，仍会生成报告（请人工确认）。\n")
 
-    # cost unit reminder for cross-platform work
-    unit = data_store.platform_unit(platform)
+    # Cost is unified to RMB at analysis time (configs/units.json converts each
+    # platform's native unit), so the report always shows comparable ¥.
+    unit = "元(RMB)"
     label = platform if not account else (
         f"{platform} (all accounts)" if all_accounts else f"{platform}/{account}")
-    print(f"[build] 平台 {label} 费用单位：{unit}"
-          f"（不同平台单位不可直接相加）")
+    print(f"[build] 平台 {label} 费用已折算为 RMB（元）；"
+          f"跨平台可直接相加。")
 
     # Build the report under report/<run_id>/<platform>[/<account>].
     # run_id defaults to a generation timestamp; pass --out to fix the name so

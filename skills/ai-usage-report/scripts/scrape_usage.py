@@ -500,7 +500,7 @@ QODER_FIELD_MAP = {
 TRAE_FIELD_MAP = {
     "date": ("usage_time", "start_time", "time", "timestamp", "created_at"),
     "model": ("model_name", "model"),
-    "cost": ("cost_money_float", "cost", "credits_float", "amount_float", "amount"),
+    "cost": ("credits_float", "amount_float", "cost_money_float", "cost", "amount"),
     "prompt": ("user_input_preview", "session_title", "title", "prompt"),
 }
 # CodeBuddy get-user-request-usage: requestId / credit / model / client / requestTime / inputTrunc

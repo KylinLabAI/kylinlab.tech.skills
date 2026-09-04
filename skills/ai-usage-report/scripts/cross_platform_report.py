@@ -205,7 +205,7 @@ def main():
         day_paid = [combined_paid[d] for d in sd_chart]
         day_cost_rmb = [round(combined_cost_rmb[d], 2) for d in sd_chart]
         charts.plot_daily_count(day_labels, day_n, day_paid, day_free, sum_dir)
-        charts.plot_daily_cost(day_labels, day_cost_rmb, sum_dir)
+        charts.plot_daily_cost(day_labels, day_cost_rmb, sum_dir, unit="元(RMB)")
         charts.plot_pie([sum(combined_free.values()), sum(combined_paid.values())],
                         [f"免费\n{sum(combined_free.values())}",
                          f"付费\n{sum(combined_paid.values())}"],

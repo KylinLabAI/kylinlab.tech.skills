@@ -256,12 +256,21 @@ def classify_task(prompt):
     return "其他/对话"
 
 
-def analyze(records, platform, out_dir, unit=""):
+def analyze(records, platform, out_dir, unit="元(RMB)"):
     os.makedirs(out_dir, exist_ok=True)
     total = len(records)
-    total_cost = sum(r["cost"] for r in records)
-    total_cost_rmb = data_store.to_rmb(platform, total_cost) if data_store else round(total_cost, 2)
-    total_credits = round(sum(to_float(r.get("credits")) for r in records), 2)
+    # All money math is done in RMB via configs/units.json (rmb_per_unit) so the
+    # end-user report only ever shows comparable ¥ — the platform-native 积分 /
+    # credits never reach the output. The native `cost` is still kept in the CSV;
+    # it is converted to RMB exactly once, here, then summed everywhere.
+    to_rmb = (data_store.to_rmb if data_store
+              else lambda p, c: round(float(c or 0), 2))
+
+    def rc(r):
+        return to_rmb(platform, r.get("cost", 0) or 0)
+
+    total_cost = round(sum(rc(r) for r in records), 2)
+    total_cost_rmb = total_cost  # `cost` is already RMB after the conversion above
     free = sum(1 for r in records if r["free"])
     paid = total - free
 
@@ -270,7 +279,7 @@ def analyze(records, platform, out_dir, unit=""):
         d = r["date"] or "unknown"
         by_day[d]["n"] += 1
         by_day[d]["free"] += 1 if r["free"] else 0
-        by_day[d]["cost"] += r["cost"]
+        by_day[d]["cost"] += rc(r)
     days = sorted([d for d in by_day if d != "unknown"])
     day_labels = [d.strftime("%m-%d") if hasattr(d, "strftime") else str(d) for d in days]
     day_n = [by_day[d]["n"] for d in days]
@@ -281,7 +290,7 @@ def analyze(records, platform, out_dir, unit=""):
     model_counter = Counter(r["model"] for r in records)
     model_cost = defaultdict(float)
     for r in records:
-        model_cost[r["model"]] += r["cost"]
+        model_cost[r["model"]] += rc(r)
     task_counter = Counter(classify_task(r["prompt"]) for r in records)
 
     # Per-account rollup. Only rendered when the data actually spans more than
@@ -290,7 +299,7 @@ def analyze(records, platform, out_dir, unit=""):
     for r in records:
         a = str(r.get("account") or "default")
         by_account[a]["n"] += 1
-        by_account[a]["cost"] += r["cost"]
+        by_account[a]["cost"] += rc(r)
         if r["free"]:
             by_account[a]["free"] += 1
         if r.get("date"):
@@ -298,7 +307,7 @@ def analyze(records, platform, out_dir, unit=""):
 
     charts.setup_font()
     charts.plot_daily_count(day_labels, day_n, day_paid, day_free, out_dir)
-    charts.plot_daily_cost(day_labels, day_cost, out_dir)
+    charts.plot_daily_cost(day_labels, day_cost, out_dir, unit=unit)
     charts.plot_pie([free, paid], [f"免费\n{free}", f"付费\n{paid}"],
                     ["#f4a582", "#2c7fb8"], "次数分布：免费 vs 付费", out_dir, "pie_count.png")
     charts.plot_model_pies(model_counter, model_cost, out_dir)
@@ -314,14 +323,12 @@ def analyze(records, platform, out_dir, unit=""):
                                 model_counter, model_cost, task_counter,
                                 dmin=dmin, dmax=dmax,
                                 by_account=by_account if len(by_account) > 1 else None,
-                                total_cost_rmb=total_cost_rmb,
-                                total_credits=total_credits)
+                                total_cost_rmb=total_cost_rmb)
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(md)
     return {
         "total": total, "free": free, "paid": paid,
-        "total_cost": round(total_cost, 2), "total_cost_rmb": total_cost_rmb,
-        "total_credits": total_credits,
+        "total_cost": total_cost, "total_cost_rmb": total_cost_rmb,
         "out": out_dir,
     }
 
