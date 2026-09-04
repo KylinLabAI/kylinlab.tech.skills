@@ -62,7 +62,7 @@ from output import (
     print_json,
     print_current_session,
     print_availability_notes,
-    generate_chart_image,
+    generate_chart_images,
     render_markdown_report,
     build_agent_view,
     compute_model_rates,
@@ -742,19 +742,19 @@ def main() -> int:
                     "cost": agent_cost_g,
                 },
             }
-            generate_chart_image(
+            charts = generate_chart_images(
                 daily, dates, daily_model, rates_root, str(summary_png),
                 verbose=False, pie_data=pie_data,
             )
         except Exception as exc:  # pragma: no cover - defensive
-            print(f"Chart image skipped: {exc}", file=sys.stderr)
-        chart_rel = summary_png.name if summary_png.exists() else None
+            print(f"Chart images skipped: {exc}", file=sys.stderr)
+        chart_files = [Path(p).name for p in charts]
         render_markdown_report(
             str(summary_md),
             daily=daily, per_session=per_session, per_model=per_model,
             per_agent=per_agent, session_infos=session_infos, dates=dates,
             top_sessions=args.top_sessions, daily_agent=daily_agent,
-            daily_model=daily_model, chart_rel=chart_rel,
+            daily_model=daily_model, chart_files=chart_files,
             per_host=per_host,
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -765,8 +765,8 @@ def main() -> int:
             },
         )
         print(f"\nSummary report saved to: {summary_md}")
-        if chart_rel:
-            print(f"Summary chart saved to: {summary_png}")
+        for cf in chart_files:
+            print(f"Summary chart saved to: {summary_dir / cf}")
 
         # --- Raw data for re-analysis ---
         raw_dir = summary_dir / "raw"
@@ -805,20 +805,20 @@ def main() -> int:
             amd = adir / "report.md"
             rates_a = compute_model_rates(view["per_model"])
             try:
-                generate_chart_image(
+                charts_a = generate_chart_images(
                     view["daily"], dates, view["daily_model"], rates_a,
                     str(ampng), verbose=False,
                 )
             except Exception as exc:  # pragma: no cover - defensive
-                print(f"Chart image skipped for {g}: {exc}", file=sys.stderr)
-            acrel = ampng.name if ampng.exists() else None
+                print(f"Chart images skipped for {g}: {exc}", file=sys.stderr)
+            chart_files_a = [Path(p).name for p in charts_a]
             render_markdown_report(
                 str(amd),
                 daily=view["daily"], per_session=view["per_session"],
                 per_model=view["per_model"], per_agent=view["per_agent"],
                 session_infos=session_infos, dates=dates,
                 top_sessions=args.top_sessions, daily_agent=view["daily_agent"],
-                daily_model=view["daily_model"], chart_rel=acrel,
+                daily_model=view["daily_model"], chart_files=chart_files_a,
                 meta={
                     "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "range": range_desc,
@@ -828,6 +828,8 @@ def main() -> int:
                 },
             )
             print(f"Agent report saved to: {amd}")
+            for cf in chart_files_a:
+                print(f"Agent chart saved to: {adir / cf}")
 
     return 0
 

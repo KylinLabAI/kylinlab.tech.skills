@@ -290,59 +290,44 @@ def _draw_share_pie(ax, title: str, mapping: dict, value_fmt) -> None:
     ax.set_title(f"{title}\n({value_fmt(sum(sizes))})", fontweight="bold")
 
 
-def generate_chart_image(
+def _save_pie_image(path: str, title: str, mapping: dict, value_fmt) -> bool:
+    """Draw a single share pie into its OWN image file. Returns True if written."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return False
+    fig = plt.figure(figsize=(6, 5))
+    ax = fig.add_subplot(1, 1, 1)
+    _draw_share_pie(ax, title, mapping, value_fmt)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
+def _make_trend_figure(
     daily: dict[str, UsageBucket],
     dates: list[str],
     daily_model: dict[str, dict] | None,
-    model_rates: dict[str, float] | None = None,
-    output_path: str = "",
-    verbose: bool = True,
-    pie_data: dict | None = None,
-) -> None:
-    """Generate a multi-panel chart image.
-
-    Trend panels:
-      1. Daily token usage by model (stacked).
-      2. Daily cost (RMB).
-      3. Daily sessions.
-      4. Daily turns.
-      5. Model usage share (pie).
-    If ``pie_data`` is given (summary report only), two extra diagram rows are
-    appended, each a 1x3 grid of pies:
-      - Host usage share by Tokens / Sessions / RMB.
-      - AI-agent client usage share by Tokens / Sessions / RMB.
-    ``pie_data`` shape::
-
-        {"host":  {"tokens": {h: v}, "sessions": {h: v}, "cost": {h: v}},
-         "agent": {"tokens": {g: v}, "sessions": {g: v}, "cost": {g: v}}}
-    """
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.ticker as mticker
-        import matplotlib.gridspec as gridspec
-    except ImportError:
-        print("matplotlib is required for chart images. Install: pip install matplotlib",
-              file=sys.stderr)
-        return
+    model_rates: dict[str, float] | None,
+):
+    """Build the combined trend figure (tokens / cost / sessions / turns)."""
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    import matplotlib.gridspec as gridspec
 
     short_dates = [d[5:] for d in dates]  # MM-DD for x-axis
     cmap = plt.colormaps["tab10"]
-    n_top = 5
-    n_pie_rows = 2 if pie_data else 0
-    fig = plt.figure(
-        figsize=(max(10, len(dates) * 0.8), n_top * 3.0 + n_pie_rows * 3.2)
-    )
-    gs = gridspec.GridSpec(n_top + n_pie_rows, 1, figure=fig, hspace=1.1)
+    n_panels = 4
+    fig = plt.figure(figsize=(max(10, len(dates) * 0.8), n_panels * 3.0))
+    gs = gridspec.GridSpec(n_panels, 1, figure=fig, hspace=0.9)
 
-    def trend_ax(i: int):
+    def ax_at(i: int):
         return fig.add_subplot(gs[i, 0])
 
     has_model = daily_model and len({m for dm in daily_model.values() for m in dm}) > 0
 
     # --- Panel 1: Daily tokens by model (stacked) ---
-    ax = trend_ax(0)
+    ax = ax_at(0)
     if has_model:
         all_models = sorted({m for dm in daily_model.values() for m in dm})
         mcolors = {m: cmap(i % 10) for i, m in enumerate(all_models)}
@@ -352,7 +337,6 @@ def generate_chart_image(
             ax.bar(short_dates, vals, bottom=bottom, label=m,
                    color=mcolors[m], edgecolor="white", linewidth=0.5)
             bottom = [b + v for b, v in zip(bottom, vals)]
-        # Daily total token count on top of each stacked bar.
         for i, tot in enumerate(bottom):
             if tot > 0:
                 ax.text(i, tot, _format_tick(tot), ha="center", va="bottom",
@@ -376,7 +360,7 @@ def generate_chart_image(
     # Computed exactly from each day's per-model input/output/cache split using
     # the saved price table (cached tokens are much cheaper, so the split
     # matters). model_rates is only a fallback for legacy scalar entries.
-    ax = trend_ax(1)
+    ax = ax_at(1)
     fx = fx_rate()
     cost_vals = []
     for d in dates:
@@ -406,7 +390,7 @@ def generate_chart_image(
             ax.text(i, v, _format_tick(v), ha="center", va="bottom", fontsize=7)
 
     # --- Panel 3: Daily sessions ---
-    ax = trend_ax(2)
+    ax = ax_at(2)
     sess = [len(daily.get(d, UsageBucket()).sessions) for d in dates]
     ax.bar(short_dates, sess, color="#4A90D9")
     ax.set_title("Daily Sessions", fontweight="bold")
@@ -414,63 +398,97 @@ def generate_chart_image(
     ax.tick_params(axis="x", rotation=45)
 
     # --- Panel 4: Daily turns ---
-    ax = trend_ax(3)
+    ax = ax_at(3)
     turns = [daily.get(d, UsageBucket()).turns for d in dates]
     ax.bar(short_dates, turns, color="#7AB648")
     ax.set_title("Daily Turns", fontweight="bold")
     ax.set_ylabel("Turns")
     ax.tick_params(axis="x", rotation=45)
 
-    # --- Panel 5: Model usage share (pie) ---
-    ax = trend_ax(4)
+    return fig
+
+
+def generate_chart_images(
+    daily: dict[str, UsageBucket],
+    dates: list[str],
+    daily_model: dict[str, dict] | None,
+    model_rates: dict[str, float] | None = None,
+    output_path: str = "",
+    verbose: bool = True,
+    pie_data: dict | None = None,
+) -> list[str]:
+    """Generate SEPARATE chart images (no single combined figure).
+
+    All trend panels live in ONE image; every pie gets its OWN image.
+
+    Files written (into ``output_path``'s directory; ``<stem>`` is the base
+    filename without extension):
+      - ``<stem>_trend.png``             — 4 trend panels (tokens / cost / sessions / turns)
+      - ``<stem>_pie_model.png``        — model usage share
+      - ``<stem>_pie_host_tokens.png``  — Host usage by Tokens   (summary report only)
+      - ``<stem>_pie_host_sessions.png``— Host usage by Sessions (summary only)
+      - ``<stem>_pie_host_cost.png``     — Host usage by RMB      (summary only)
+      - ``<stem>_pie_agent_tokens.png``  — AI-agent usage by Tokens (summary only)
+      - ``<stem>_pie_agent_sessions.png``— AI-agent usage by Sessions (summary only)
+      - ``<stem>_pie_agent_cost.png``    — AI-agent usage by RMB    (summary only)
+
+    Returns the list of absolute paths written (empty if matplotlib is missing
+    or ``output_path`` is blank).
+    """
+    if not output_path:
+        return []
+    try:
+        import matplotlib  # noqa: F401
+        import matplotlib.pyplot as plt  # noqa: F401
+    except ImportError:
+        print("matplotlib is required for chart images. Install: pip install matplotlib",
+              file=sys.stderr)
+        return []
+    from pathlib import Path
+
+    base = Path(output_path)
+    out_dir = base.parent
+    stem = base.stem
+    written: list[str] = []
+
+    # --- Trend image: ONE file, all trend panels ---
+    try:
+        fig = _make_trend_figure(daily, dates, daily_model, model_rates)
+        trend_path = out_dir / f"{stem}_trend.png"
+        fig.savefig(str(trend_path), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        written.append(str(trend_path))
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Trend chart skipped: {exc}", file=sys.stderr)
+
+    # --- Model usage share pie: its OWN image ---
     pie_totals: dict[str, int] = {}
     for d in dates:
         for m, tok in (daily_model.get(d, {}) or {}).items():
             pie_totals[m] = pie_totals.get(m, 0) + _tok_total(tok)
     if pie_totals:
-        labels = sorted(pie_totals, key=lambda x: -pie_totals[x])
-        sizes = [pie_totals[m] for m in labels]
-        ax.pie(sizes, labels=labels, colors=[cmap(i % 10) for i in range(len(labels))],
-               autopct=lambda p: f"{p:.0f}%", textprops={"fontsize": 8}, startangle=90)
-        ax.set_title("Model Usage Share", fontweight="bold")
-    else:
-        ax.axis("off")
+        model_path = out_dir / f"{stem}_pie_model.png"
+        if _save_pie_image(str(model_path), "Model Usage Share", pie_totals, _format_tick):
+            written.append(str(model_path))
 
-    # --- Host / AI-agent client usage share pies (summary only) ---
+    # --- Host / AI-agent client usage share pies: each its OWN image (summary only) ---
     if pie_data:
-        for r_off, (key, label) in enumerate(
-            [("host", "Host"), ("agent", "AI-Agent Client")]
-        ):
-            inner = gridspec.GridSpecFromSubplotSpec(
-                1, 3, subplot_spec=gs[n_top + r_off, 0], wspace=0.5
-            )
+        for key, label in [("host", "Host"), ("agent", "AI-Agent Client")]:
             block = pie_data.get(key, {})
-            _draw_share_pie(
-                fig.add_subplot(inner[0, 0]),
-                f"{label} Usage by Tokens",
-                block.get("tokens", {}),
-                _format_tick,
-            )
-            _draw_share_pie(
-                fig.add_subplot(inner[0, 1]),
-                f"{label} Usage by Sessions",
-                block.get("sessions", {}),
-                lambda v: f"{int(v)}",
-            )
-            _draw_share_pie(
-                fig.add_subplot(inner[0, 2]),
-                f"{label} Usage by RMB",
-                block.get("cost", {}),
-                lambda v: f"\u00a5{_format_tick(v)}",
-            )
+            for metric, title, vf in (
+                ("tokens", f"{label} Usage by Tokens", _format_tick),
+                ("sessions", f"{label} Usage by Sessions", lambda v: f"{int(v)}"),
+                ("cost", f"{label} Usage by RMB", lambda v: f"\u00a5{_format_tick(v)}"),
+            ):
+                p = out_dir / f"{stem}_pie_{key}_{metric}.png"
+                if _save_pie_image(str(p), title, block.get(metric, {}), vf):
+                    written.append(str(p))
 
-    # bbox_inches="tight" below handles spacing; tight_layout is skipped because
-    # it does not compose well with GridSpecFromSubplotSpec (would warn and can
-    # misplace the pie sub-axes).
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    if verbose:
-        print(f"\nChart saved to: {output_path}")
+    if verbose and written:
+        print("\nCharts saved to:")
+        for w in written:
+            print(f"  {w}")
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +554,7 @@ def build_agent_view(
 
     `members` are the raw agent labels that map to `folder_agent`
     (claude-cli + claude-vscode -> claude-code). The returned dict has the same
-    shape expected by `render_markdown_report` / `generate_chart_image`.
+    shape expected by `render_markdown_report` / `generate_chart_images`.
     """
     sess: dict[str, UsageBucket] = {
         sk: b for sk, b in per_session.items()
@@ -799,7 +817,7 @@ def print_table(
 
     if chart_file:
         active_dates = [d for d in dates if daily.get(d, UsageBucket()).total_tokens > 0]
-        generate_chart_image(
+        generate_chart_images(
             daily, active_dates, daily_model, compute_model_rates(per_model), chart_file
         )
 
@@ -831,7 +849,7 @@ def render_markdown_report(
     top_sessions: int,
     daily_agent: dict[str, dict[str, int]] | None = None,
     daily_model: dict[str, dict[str, int]] | None = None,
-    chart_rel: str | None = None,
+    chart_files: list[str] | None = None,
     per_host: dict[str, UsageBucket] | None = None,
     meta: dict[str, str] | None = None,
 ) -> None:
@@ -986,12 +1004,16 @@ def render_markdown_report(
     ))
     L.append("")
 
-    # Chart
-    if chart_rel:
-        L.append("## Trend Chart")
+    # Charts (one image per file; trend panels share the _trend image)
+    if chart_files:
+        L.append("## Charts")
         L.append("")
-        L.append(f"![token usage trend]({chart_rel})")
-        L.append("")
+        for cf in chart_files:
+            title = cf.rsplit(".", 1)[0].replace("_", " ").replace("chart ", "")
+            L.append(f"### {title}")
+            L.append("")
+            L.append(f"![{title}]({cf})")
+            L.append("")
 
     # Notes
     notes = meta.get("notes") or []

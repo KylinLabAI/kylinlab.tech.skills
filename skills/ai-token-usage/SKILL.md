@@ -117,7 +117,8 @@ python scripts/ai_token_usage.py --days 30 --agent claude-code --no-subagents
 # Custom Claude Code projects directory
 python scripts/ai_token_usage.py --days 30 --claude-projects-dir /custom/path
 
-# Generate chart image (PNG)
+# Generate chart images (multiple PNGs): chart_trend.png + one chart_pie_*.png
+# per diagram, written next to the given base name (stem + _suffix.png).
 python scripts/ai_token_usage.py --days 7 --chart-file /tmp/ai_token_usage_7d.png
 
 # No trend chart
@@ -151,7 +152,7 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--top-sessions N` | 3 | Show top N sessions (0 to disable) |
 | `--agent` | — | Filter: `copilot`, `codex` (all), `codex-cli`, `codex-vscode`, `claude-code` (all), `claude-cli`, `claude-vscode`, `qoder`, `codebuddy`, `trae`, `opencode`, or `cloudecode` |
 | `--no-chart` | false | Skip the daily ASCII trend chart |
-| `--chart-file PATH` | — | Save matplotlib chart image (PNG) with 5 panels: daily tokens by model (stacked), daily cost (RMB, exact from input/output/cache split), daily sessions, daily turns, and model usage share pie |
+| `--chart-file PATH` | — | Save matplotlib chart images (multiple PNGs): `chart_trend.png` (4 trend panels) plus one `chart_pie_*.png` per diagram — `chart_pie_model.png`, and for the summary also `chart_pie_host_tokens/sessions/cost.png` and `chart_pie_agent_tokens/sessions/cost.png`. Files are written next to the given base name (stem + `_suffix.png`); the script prints every path |
 | `--chart-width N` | 48 | Max bar width for ASCII trend chart |
 | `--no-archived` | false | Skip Codex archived sessions |
 | `--no-subagents` | false | Exclude Claude Code subagent sessions from token counts |
@@ -205,28 +206,41 @@ store and reports both live under this target dir (never inside the skill):
   report/<YYYY-MM-DD_HH-MM-SS>/
     summary/                    # combined (all agents) report
       report.md                 # fixed template, all agents merged
-      chart.png                 # 5-panel trend chart
+      chart_trend.png           # all 4 trend panels in ONE image
+      chart_pie_model.png       # model usage share (own image)
+      chart_pie_host_tokens.png # Host usage by Tokens (own image)
+      chart_pie_host_sessions.png
+      chart_pie_host_cost.png
+      chart_pie_agent_tokens.png  # AI-agent usage by Tokens (own image)
+      chart_pie_agent_sessions.png
+      chart_pie_agent_cost.png
       raw/report-data.json      # full structured data for re-analysis
     <agent>/                    # one folder per agent group (e.g. opencode, claudecode, copilot)
       report.md                 # that agent's report (same template)
-      chart.png                 # that agent's chart
+      chart_trend.png           # that agent's 4 trend panels (one image)
+      chart_pie_model.png       # that agent's model share (own image)
 ```
 
 - **`summary/report.md`** — a self-contained markdown report combining **all
   agents** using a **fixed template** (Summary → Usage by Agent → Usage by
-  Model → Top N Sessions → Daily Usage → Trend Chart → Notes) so every run is
+  Model → Top N Sessions → Daily Usage → Charts → Notes) so every run is
   comparable. Cost is shown in the selected `--currency`.
-- **`chart.png`** (summary and per-agent) — a 5-panel trend chart:
-  1. Daily token usage **by model** (stacked; combines the former by-agent +
-     by-model panels),
-  2. Daily **cost (RMB)**,
-  3. Daily **sessions**,
-  4. Daily **turns**,
-  5. **Model usage share** pie.
-  Generated with matplotlib; `matplotlib` is declared in
-  `configs/apps.yaml` (profile `ai-token-usage`), so `scripts/init.py` installs
-  it. If it is still unavailable, the PNG is skipped and the markdown notes the
-  absence.
+- **Charts** (summary and per-agent) — generated as **separate PNG images**
+  (one per diagram) with matplotlib (`declared` in `configs/apps.yaml`, profile
+  `ai-token-usage`, so `scripts/init.py` installs it; if unavailable, the PNGs
+  are skipped and the markdown notes the absence):
+  - **`chart_trend.png`** — the 4 trend panels in a **single** image:
+    1. Daily token usage **by model** (stacked),
+    2. Daily **cost (RMB)**,
+    3. Daily **sessions**,
+    4. Daily **turns**.
+  - **`chart_pie_model.png`** — **Model usage share** pie (its own image).
+  - Summary only — each **host** / **AI-agent client** share pie gets **its own
+    image**, split by Tokens / Sessions / RMB:
+    `chart_pie_host_tokens.png`, `chart_pie_host_sessions.png`,
+    `chart_pie_host_cost.png`, `chart_pie_agent_tokens.png`,
+    `chart_pie_agent_sessions.png`, `chart_pie_agent_cost.png`.
+  Every pie is a standalone image so it can be embedded or shared individually.
 - **`summary/raw/report-data.json`** — the complete aggregated payload (daily,
   per-session, per-model, per-agent, `per_agent_model`, `daily_agent_model`,
   costs, tool availability) so you can run your own analyses or rebuild a
@@ -436,7 +450,7 @@ non-parseable tools (TRAE, CodeBuddy) and per-agent token calculation.
 4. **Top N sessions** — highest-token sessions with agent, model, task
 5. **Daily usage table** — date, input, output, total, turns, sessions, agents
 6. **Daily ASCII trend charts** — total, per-agent, per-model sub-charts
-7. **Chart image** (if `--chart-file`) — 3-panel stacked bar chart (total, by-agent, by-model)
+7. **Chart images** (if `--chart-file`) — `chart_trend.png` (4 trend panels) plus one `chart_pie_*.png` per diagram
 
 ### Current session mode (`--current-session`)
 
@@ -464,7 +478,9 @@ deltas of `total_token_usage`; current context fill uses
    with `--chart-file /tmp/ai_token_usage_<range>.png`. Do this for requests
    like "last 30 days", "past week", "this month", "by model", or "top
    sessions" unless the user explicitly asks for machine-readable output.
-2. Open or report the chart file path after generation: `open /tmp/ai_token_usage_<range>.png`.
+2. After generation, the script prints every chart path. Open whichever
+   image you want, e.g. `open /tmp/ai_token_usage_<range>_trend.png` (the
+   combined trend panels) or any `chart_pie_*.png` (a single pie diagram).
 3. For machine-readable output, use `--format csv` or `--format json`.
 4. To investigate a specific agent, use `--agent copilot` or `--agent codex`.
 5. To see more session detail, increase `--top-sessions`.
