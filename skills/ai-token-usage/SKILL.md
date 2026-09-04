@@ -152,7 +152,7 @@ python scripts/ai_token_usage.py --current-session --session-file /path/to/sessi
 | `--top-sessions N` | 3 | Show top N sessions (0 to disable) |
 | `--agent` | — | Filter: `copilot`, `codex` (all), `codex-cli`, `codex-vscode`, `claude-code` (all), `claude-cli`, `claude-vscode`, `qoder`, `codebuddy`, `trae`, `opencode`, or `cloudecode` |
 | `--no-chart` | false | Skip the daily ASCII trend chart |
-| `--chart-file PATH` | — | Save matplotlib chart images (multiple PNGs): `chart_trend.png` (4 trend panels) plus one `chart_pie_*.png` per diagram — `chart_pie_model.png`, and for the summary also `chart_pie_host_tokens/sessions/cost.png` and `chart_pie_agent_tokens/sessions/cost.png`. Files are written next to the given base name (stem + `_suffix.png`); the script prints every path |
+| `--chart-file PATH` | — | Save matplotlib chart images (multiple PNGs): `chart_trend.png` (4 trend panels) plus one `chart_pie_*.png` per diagram — `chart_pie_model.png`, and `chart_pie_host_tokens/sessions/cost.png` (summary always when >1 host; per-agent report too when that agent spans >1 host) and, for the summary only, `chart_pie_agent_tokens/sessions/cost.png`. Files are written next to the given base name (stem + `_suffix.png`); the script prints every path |
 | `--chart-width N` | 48 | Max bar width for ASCII trend chart |
 | `--no-archived` | false | Skip Codex archived sessions |
 | `--no-subagents` | false | Exclude Claude Code subagent sessions from token counts |
@@ -219,6 +219,10 @@ store and reports both live under this target dir (never inside the skill):
       report.md                 # that agent's report (same template)
       chart_trend.png           # that agent's 4 trend panels (one image)
       chart_pie_model.png       # that agent's model share (own image)
+      chart_pie_host_tokens.png # that agent's Host usage by Tokens (own image,
+                                 #   only when the agent spans >1 host)
+      chart_pie_host_sessions.png
+      chart_pie_host_cost.png
 ```
 
 - **`summary/report.md`** — a self-contained markdown report combining **all
@@ -235,10 +239,14 @@ store and reports both live under this target dir (never inside the skill):
     3. Daily **sessions**,
     4. Daily **turns**.
   - **`chart_pie_model.png`** — **Model usage share** pie (its own image).
-  - Summary only — each **host** / **AI-agent client** share pie gets **its own
-    image**, split by Tokens / Sessions / RMB:
-    `chart_pie_host_tokens.png`, `chart_pie_host_sessions.png`,
-    `chart_pie_host_cost.png`, `chart_pie_agent_tokens.png`,
+  - **Host** share pies — each gets **its own image**, split by Tokens /
+    Sessions / RMB: `chart_pie_host_tokens.png`, `chart_pie_host_sessions.png`,
+    `chart_pie_host_cost.png`. The **summary** always emits these (when it has
+    more than one host); a **per-agent** report emits them too, but **only when
+    that agent spans more than one host** (a single-host agent would produce a
+    meaningless 1-slice pie).
+  - **AI-agent client** share pies — **summary only** — each gets its own image,
+    split by Tokens / Sessions / RMB: `chart_pie_agent_tokens.png`,
     `chart_pie_agent_sessions.png`, `chart_pie_agent_cost.png`.
   Every pie is a standalone image so it can be embedded or shared individually.
 - **`summary/raw/report-data.json`** — the complete aggregated payload (daily,

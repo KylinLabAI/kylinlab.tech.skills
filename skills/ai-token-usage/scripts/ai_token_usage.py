@@ -901,6 +901,49 @@ def main() -> int:
                 per_agent_model=per_agent_model, session_infos=session_infos,
                 dates=dates, daily_agent_model=daily_agent_model,
             )
+            # Per-host aggregation scoped to this agent's sessions, so a
+            # multi-machine agent report can show host share pies.
+            view_per_host: dict[str, UsageBucket] = {}
+            for _sk, _b in view["per_session"].items():
+                _h = (
+                    session_infos.get(_sk).host
+                    if session_infos.get(_sk) else ""
+                ) or "unknown"
+                _pb = view_per_host.setdefault(_h, UsageBucket())
+                _pb.input_tokens += _b.input_tokens
+                _pb.output_tokens += _b.output_tokens
+                _pb.total_tokens += _b.total_tokens
+                _pb.cache_read_tokens += _b.cache_read_tokens
+                _pb.turns += _b.turns
+                _pb.sessions.add(_sk)
+                _pb.models.update(_b.models)
+                _pb.agents.update(_b.agents)
+
+            # Host usage-share pies for this agent (only when more than one
+            # host; drawing is additionally guarded inside generate_chart_images).
+            pie_data_a = None
+            if len(view_per_host) > 1:
+                _, _, session_cost_a, _, _ = compute_costs(
+                    view["per_model"], view["per_session"], session_infos
+                )
+                fx = fx_rate()
+                host_tokens_a = {_h: _b.total_tokens for _h, _b in view_per_host.items()}
+                host_sessions_a = {_h: len(_b.sessions) for _h, _b in view_per_host.items()}
+                host_cost_a = {_h: 0.0 for _h in view_per_host}
+                for _sk, _c in session_cost_a.items():
+                    _h = (
+                        session_infos.get(_sk).host
+                        if session_infos.get(_sk) else ""
+                    ) or "unknown"
+                    host_cost_a[_h] = host_cost_a.get(_h, 0.0) + _c * fx
+                pie_data_a = {
+                    "host": {
+                        "tokens": host_tokens_a,
+                        "sessions": host_sessions_a,
+                        "cost": host_cost_a,
+                    }
+                }
+
             adir = report_dir / g.replace("-", "")
             adir.mkdir(parents=True, exist_ok=True)
             ampng = adir / "chart.png"
@@ -909,7 +952,7 @@ def main() -> int:
             try:
                 charts_a = generate_chart_images(
                     view["daily"], dates, view["daily_model"], rates_a,
-                    str(ampng), verbose=False,
+                    str(ampng), verbose=False, pie_data=pie_data_a,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 print(f"Chart images skipped for {g}: {exc}", file=sys.stderr)
@@ -921,6 +964,7 @@ def main() -> int:
                 session_infos=session_infos, dates=dates,
                 top_sessions=args.top_sessions, daily_agent=view["daily_agent"],
                 daily_model=view["daily_model"], chart_files=chart_files_a,
+                per_host=view_per_host,
                 meta={
                     "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "range": range_desc,

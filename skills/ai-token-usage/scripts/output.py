@@ -425,12 +425,19 @@ def generate_chart_images(
     filename without extension):
       - ``<stem>_trend.png``             — 4 trend panels (tokens / cost / sessions / turns)
       - ``<stem>_pie_model.png``        — model usage share
-      - ``<stem>_pie_host_tokens.png``  — Host usage by Tokens   (summary report only)
-      - ``<stem>_pie_host_sessions.png``— Host usage by Sessions (summary only)
-      - ``<stem>_pie_host_cost.png``     — Host usage by RMB      (summary only)
+      - ``<stem>_pie_host_tokens.png``  — Host usage by Tokens   (summary report, or any
+                                           report with >1 host)
+      - ``<stem>_pie_host_sessions.png``— Host usage by Sessions (same)
+      - ``<stem>_pie_host_cost.png``     — Host usage by RMB      (same)
       - ``<stem>_pie_agent_tokens.png``  — AI-agent usage by Tokens (summary only)
       - ``<stem>_pie_agent_sessions.png``— AI-agent usage by Sessions (summary only)
       - ``<stem>_pie_agent_cost.png``    — AI-agent usage by RMB    (summary only)
+
+    A host/agent pie block is drawn only for metrics that have MORE THAN ONE
+    non-zero category — a single-slice (or blank) pie carries no information,
+    so it is skipped per metric. So a per-agent report that covers just one
+    host will not emit the host pies (but a per-agent report spanning two or
+    more machines will, for every metric with >1 non-zero host).
 
     Returns the list of absolute paths written (empty if matplotlib is missing
     or ``output_path`` is blank).
@@ -471,17 +478,31 @@ def generate_chart_images(
         if _save_pie_image(str(model_path), "Model Usage Share", pie_totals, _format_tick):
             written.append(str(model_path))
 
-    # --- Host / AI-agent client usage share pies: each its OWN image (summary only) ---
+    # --- Host / AI-agent client usage share pies: each its OWN image ---
+    # Each metric is guarded by its own non-zero category count (a single-slice
+    # or blank pie carries no information, so it is skipped). The "host" block
+    # is provided by both the summary report and per-agent reports that span
+    # >1 machine; the "agent" block is summary-only.
     if pie_data:
         for key, label in [("host", "Host"), ("agent", "AI-Agent Client")]:
             block = pie_data.get(key, {})
+            if not block:
+                continue
             for metric, title, vf in (
                 ("tokens", f"{label} Usage by Tokens", _format_tick),
                 ("sessions", f"{label} Usage by Sessions", lambda v: f"{int(v)}"),
                 ("cost", f"{label} Usage by RMB", lambda v: f"\u00a5{_format_tick(v)}"),
             ):
+                # Guard per metric by counting NON-ZERO categories, matching
+                # _draw_share_pie's `items = {k: v for k, v in mapping.items()
+                # if v}` filter. A single non-zero slice carries no information,
+                # so it is skipped (e.g. a host whose cost is 0 because its
+                # models are unpriced would otherwise produce a blank cost pie).
+                data = {k: v for k, v in (block.get(metric, {}) or {}).items() if v}
+                if len(data) <= 1:
+                    continue
                 p = out_dir / f"{stem}_pie_{key}_{metric}.png"
-                if _save_pie_image(str(p), title, block.get(metric, {}), vf):
+                if _save_pie_image(str(p), title, data, vf):
                     written.append(str(p))
 
     if verbose and written:
