@@ -304,11 +304,42 @@ def analyze(records, platform, out_dir, unit="元(RMB)"):
         if r.get("date"):
             by_account[a]["days"].add(str(r["date"]))
 
+    # Top 3 highest-cost individual sessions (by RMB cost) for the report's
+    # "high-cost sessions" table. Records without a date are skipped.
+    def _session_dt(r):
+        d = r.get("date")
+        if hasattr(d, "strftime"):
+            return d.strftime("%Y-%m-%d")
+        return str(d) if d else "?"
+
+    def _fmt_cell(v, n):
+        s = str(v).replace("\n", " ").replace("\r", " ").replace("|", "\\|").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
+    top_sessions = sorted(
+        (r for r in records if r.get("date")),
+        key=lambda r: rc(r), reverse=True
+    )[:3]
+    sess_rows = "\n".join(
+        f"| {i + 1} | {round(rc(r), 2)} | {_fmt_cell(r.get('model', '?'), 24)} | "
+        f"{_fmt_cell(r.get('prompt', ''), 40)} | {platform} | "
+        f"{_fmt_cell(_session_dt(r), 16)} |"
+        for i, r in enumerate(top_sessions)
+    )
+    top3_md = (
+        "\n## 高费用会话 Top 3\n\n"
+        "| # | 费用(RMB) | 模型 | 提示词 | 平台 | 日期时间 |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        + (sess_rows if sess_rows else "| — | — | — | — | — | — |")
+        + "\n"
+    )
+
     charts.setup_font()
     charts.plot_daily_count(day_labels, day_n, day_paid, day_free, out_dir)
     charts.plot_daily_cost(day_labels, day_cost, out_dir, unit=unit)
     charts.plot_pie([free, paid], [f"免费\n{free}", f"付费\n{paid}"],
-                    ["#f4a582", "#2c7fb8"], "次数分布：免费 vs 付费", out_dir, "pie_count.png")
+                    ["#f4a582", "#2c7fb8"], "次数分布：免费 vs 付费", out_dir, "pie_count.png",
+                    others_pct=0)
     charts.plot_model_pies(model_counter, model_cost, out_dir)
     charts.plot_task(task_counter, out_dir)
 
@@ -322,6 +353,7 @@ def analyze(records, platform, out_dir, unit="元(RMB)"):
                                 model_counter, model_cost, task_counter,
                                 dmin=dmin, dmax=dmax,
                                 by_account=by_account if len(by_account) > 1 else None)
+    md += top3_md
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(md)
     return {

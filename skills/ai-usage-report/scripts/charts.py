@@ -50,15 +50,37 @@ def plot_daily_cost(labels, cost, out_dir, unit="元(RMB)"):
     return save(fig, out_dir, "daily_cost.png")
 
 
-def plot_pie(values, labels, colors, title, out_dir, name):
-    if not values or sum(values) <= 0:
+def plot_pie(values, labels, colors, title, out_dir, name, others_pct=1.0):
+    """Pie chart. Slices whose value is below `others_pct` percent of the total
+    are merged into a single "Others" slice so long tails stay readable.
+    Pass others_pct=0 to disable merging (e.g. the free/paid pie)."""
+    vals = list(values)
+    total = sum(vals)
+    if others_pct and total > 0:
+        keep_v, keep_l, others = [], [], 0.0
+        for v, l in zip(vals, labels):
+            if v <= 0:
+                continue  # drop zero slices entirely
+            if (v / total * 100.0) < others_pct:
+                others += v
+            else:
+                keep_v.append(v)
+                keep_l.append(l)
+        if others > 0:
+            keep_v.append(others)
+            keep_l.append("Others")
+            vals, labels = keep_v, keep_l
+    if not vals or sum(vals) <= 0:
         # empty / all-zero data: emit a placeholder text image
         fig, ax = plt.subplots(figsize=(6, 5))
         ax.text(0.5, 0.5, "无数据", ha="center", va="center", fontsize=16)
         ax.axis("off"); ax.set_title(title)
         return save(fig, out_dir, name)
+    final_colors = list(colors)[:len(vals)]
+    while len(final_colors) < len(vals):
+        final_colors.append("#bdbdbd")  # neutral grey for the merged "Others"
     fig, ax = plt.subplots(figsize=(6, 5))
-    ax.pie(values, labels=labels, autopct="%1.1f%%", colors=list(colors),
+    ax.pie(vals, labels=labels, autopct="%1.1f%%", colors=final_colors,
            startangle=90, textprops={"fontsize": 9})
     ax.set_title(title)
     return save(fig, out_dir, name)

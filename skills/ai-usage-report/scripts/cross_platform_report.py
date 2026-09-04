@@ -210,7 +210,7 @@ def main():
                         [f"免费\n{sum(combined_free.values())}",
                          f"付费\n{sum(combined_paid.values())}"],
                         ["#f4a582", "#2c7fb8"], "次数分布：免费 vs 付费",
-                        sum_dir, "pie_count.png")
+                        sum_dir, "pie_count.png", others_pct=0)
         charts.plot_model_pies(combined_model_counter, combined_model_cost_rmb, sum_dir)
         charts.plot_task(combined_task_counter, sum_dir)
         plats_present = [p for p in PLATS if platform_n[p] > 0]
@@ -251,9 +251,22 @@ def main():
 ![请求次数 各平台占比](pie_platform_request.png)
 """
 
+    generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    top3_models = combined_model_counter.most_common(3)
+    top3_str = "、".join(f"{m}（{n}）" for m, n in top3_models) or "—"
+    summary_block = (
+        "## 摘要\n\n"
+        "| 字段 | 值 |\n"
+        "| --- | --- |\n"
+        f"| 生成时间 | {generated} |\n"
+        f"| 报告日期范围 | {start} ~ {end} |\n"
+        f"| 总费用（折算 RMB） | {tot_rmb} |\n"
+        f"| 总请求次数 | {tot_n} |\n"
+        f"| Top 3 模型（按请求量） | {top3_str} |\n\n"
+    )
     md = f"""# AI 平台使用统计 · 汇总（{start} ~ {end}）
 
-> **单位说明：** 各平台原生费用单位不同（Qoder/DeepSeek 为人民币；TRAE/CodeBuddy 为积分），
+{summary_block}> **单位说明：** 各平台原生费用单位不同（Qoder/DeepSeek 为人民币；TRAE/CodeBuddy 为积分），
 > 本表「折算费用(RMB)」按 `configs/units.json` 的折算率把积分换算成人民币以便跨平台比较：
 > TRAE {rate_trae}/积分（89RMB/4000积分），CodeBuddy {rate_cb}/积分（99RMB/4000积分）。
 > 末行「全平台折算合计」即为可比的人民币总费用。
