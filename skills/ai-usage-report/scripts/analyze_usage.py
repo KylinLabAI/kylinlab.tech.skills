@@ -270,7 +270,6 @@ def analyze(records, platform, out_dir, unit="元(RMB)"):
         return to_rmb(platform, r.get("cost", 0) or 0)
 
     total_cost = round(sum(rc(r) for r in records), 2)
-    total_cost_rmb = total_cost  # `cost` is already RMB after the conversion above
     free = sum(1 for r in records if r["free"])
     paid = total - free
 
@@ -322,13 +321,12 @@ def analyze(records, platform, out_dir, unit="元(RMB)"):
                                 day_labels, day_n, day_free, day_paid, day_cost,
                                 model_counter, model_cost, task_counter,
                                 dmin=dmin, dmax=dmax,
-                                by_account=by_account if len(by_account) > 1 else None,
-                                total_cost_rmb=total_cost_rmb)
+                                by_account=by_account if len(by_account) > 1 else None)
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(md)
     return {
         "total": total, "free": free, "paid": paid,
-        "total_cost": total_cost, "total_cost_rmb": total_cost_rmb,
+        "total_cost": total_cost,
         "out": out_dir,
     }
 

@@ -104,16 +104,13 @@ def render_account_breakdown_md(by_account, unit):
 def render_markdown(platform, total, free, paid, total_cost, unit,
                     day_labels, day_n, day_free, day_paid, day_cost,
                     model_counter, model_cost, task_counter,
-                    dmin=None, dmax=None, by_account=None, total_cost_rmb=None,
-                    total_credits=None):
+                    dmin=None, dmax=None, by_account=None):
     """Render the per-platform usage report as a Markdown document.
 
     Charts are still produced as PNGs (see plot_*); they are embedded via
     relative ``![](name.png)`` links so the .md is portable inside its folder.
     """
     rng = f"（{dmin} ~ {dmax}）" if dmin and dmax else ""
-    credits_line = (f"| 积分消耗（各平台单位不同，不可跨平台相加） | {round(total_credits, 2)} |\n"
-                   if total_credits else "")
     day_rows = "\n".join(
         f"| {l} | {n} | {f} | {p} | {c} |"
         for l, n, f, p, c in zip(day_labels, day_n, day_free, day_paid, day_cost))
@@ -133,8 +130,6 @@ def render_markdown(platform, total, free, paid, total_cost, unit,
 | 免费请求 | {free} |
 | 付费请求 | {paid} |
 | 总费用 | {round(total_cost, 2)} {unit} |
-| 折算费用(RMB) | {round(total_cost_rmb, 2) if total_cost_rmb is not None else "—"} |
-{credits_line}
 
 > 说明：表中仅含单一费用列（无折扣信息）时，打折前 = 打折后 = 费用。「免费」指费用=0 的请求；「付费」指费用>0 的请求。无单次耗时字段时省略请求时间相关图表。
 

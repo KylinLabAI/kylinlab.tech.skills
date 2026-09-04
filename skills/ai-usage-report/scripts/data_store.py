@@ -713,6 +713,45 @@ def _merge_rows(rows):
     return [best[k] for k in order]
 
 
+def _median_positive(values):
+    pos = [v for v in values if v > 0]
+    if not pos:
+        return 0.0
+    pos.sort()
+    n = len(pos)
+    mid = n // 2
+    return float(pos[mid] if n % 2 else (pos[mid - 1] + pos[mid]) / 2.0)
+
+
+def _drop_legacy_unit_scale(existing, new_rows, platform):
+    """When re-scraping a platform whose cost unit changed, legacy rows stored
+    in the old unit have a wildly different cost magnitude and fail to dedup
+    against the freshly scraped (new-unit) rows, double-counting every
+    overlapping session. Drop only those old-unit rows; same-unit rows and
+    zero-cost (free) rows are kept. The freshly scraped batch is authoritative.
+    """
+    med_ex = _median_positive([_canon_cost(r) for r in existing])
+    med_nw = _median_positive([_canon_cost(r) for r in new_rows])
+    if med_ex <= 0 or med_nw <= 0:
+        return existing
+    # Use a high bar so we only react to a true unit change (TRAE's RMB->积分
+    # switch is ~40x). A modest same-unit median drift (e.g. a price change
+    # mid-month) won't trip this and silently drop legitimate rows.
+    if max(med_nw, med_ex) / min(med_nw, med_ex) < 20.0:
+        return existing
+    kept, dropped = [], 0
+    for r in existing:
+        c = _canon_cost(r)
+        if c <= 0 or max(c, med_nw) / min(c, med_nw) < 5.0:
+            kept.append(r)
+        else:
+            dropped += 1
+    if dropped:
+        print(f"[store] ⚠ {platform}: detected cost-unit change; dropped "
+              f"{dropped} legacy row(s) in the old unit to avoid double-count.")
+    return kept
+
+
 def merge_and_save(platform, new_records, req_start=None, req_end=None,
                    account=None):
     """Merge freshly captured records into the store as MONTHLY CSV files.
@@ -779,6 +818,12 @@ def merge_and_save(platform, new_records, req_start=None, req_end=None,
     for (y, mo), rows in sorted(by_month.items()):
         path = _month_path(account_dir, y, mo)
         existing = _read_rows(path)
+        # Guard: if a platform's cost *unit* changed between runs (e.g. TRAE
+        # switched RMB -> 积分), legacy rows carry a different cost magnitude
+        # and would survive dedup next to the new rows, silently
+        # double-counting. Drop only the old-unit rows; keep new-unit rows.
+        if existing and rows:
+            existing = _drop_legacy_unit_scale(existing, rows, platform)
         merged = _merge_rows(existing + rows)
         for r in merged:
             r["account"] = acc
