@@ -85,6 +85,7 @@ from data_store import (
     update_data_store,
     merge_rows_into_store,
     load_imported_csv,
+    load_store_csv,
     AGENT_GROUP_MAP,
     mask_host,
     real_hostname,
@@ -352,6 +353,82 @@ def analyze_current_session(session_path: Path) -> CurrentSessionUsage:
 
 
 # ---------------------------------------------------------------------------
+# Store-as-source-of-truth aggregation
+# ---------------------------------------------------------------------------
+
+def _row_in_agent_filter(row: dict, agent_filter: str | None) -> bool:
+    """Match a store row against the ``--agent`` filter (raw agent or group)."""
+    if agent_filter is None:
+        return True
+    raw = (row.get("agent") or "").strip()
+    grp = (row.get("agent_group") or "").strip() or AGENT_GROUP_MAP.get(raw, raw or "unknown")
+    if agent_filter == "codex":
+        return grp == "codex"
+    if agent_filter == "claude-code":
+        return grp == "claudecode"
+    return raw == agent_filter
+
+
+def aggregate_store(data_dir, start, end, agent_filter: str | None = None) -> dict:
+    """Build the report aggregation by reading the persistent store for [start, end).
+
+    The store (``data/data.csv``) is the single source of truth: every machine's
+    sessions — this host's scans plus any imported machines — live there, so
+    reading it back makes the report cover all of them without re-passing
+    ``--import-data``. The ``--agent`` filter is applied at read time so per-agent
+    reports stay correct even though the store is cumulative.
+    """
+    daily = defaultdict(UsageBucket)
+    per_session = defaultdict(UsageBucket)
+    per_model = defaultdict(UsageBucket)
+    per_agent = defaultdict(UsageBucket)
+    daily_agent: dict[str, dict[str, int]] = {}
+    daily_model: dict[str, dict] = {}
+    per_agent_model: dict[str, dict[str, UsageBucket]] = {}
+    daily_agent_model: dict[str, dict[str, dict[str, int]]] = {}
+    session_infos: dict[str, SessionInfo] = {}
+
+    for r in load_store_csv(data_dir):
+        if agent_filter is not None and not _row_in_agent_filter(r, agent_filter):
+            continue
+        ts = parse_timestamp(r.get("started_at"))
+        if ts is None or ts < start or ts >= end:
+            continue
+        sk = (r.get("session_key") or "").strip()
+        if not sk:
+            continue
+        model = (r.get("model") or "").strip()
+        agent = (r.get("agent") or "").strip()
+        add_usage(
+            daily, per_session, per_model, per_agent,
+            int(r.get("input_tokens") or 0), int(r.get("output_tokens") or 0),
+            sk, model, agent, ts,
+            daily_agent, daily_model, per_agent_model, daily_agent_model,
+            turns=int(r.get("turns") or 0),
+            cache_read=int(r.get("cache_read_tokens") or 0),
+        )
+        if sk not in session_infos:
+            session_infos[sk] = SessionInfo(
+                session_key=sk, agent=agent, model=model,
+                task=(r.get("task") or "").strip(),
+                started_at=(r.get("started_at") or "").strip(),
+                cwd=(r.get("cwd") or "").strip(),
+                host=(r.get("host") or "").strip() or "unknown",
+            )
+    return {
+        "daily": daily,
+        "per_session": per_session,
+        "per_model": per_model,
+        "per_agent": per_agent,
+        "daily_agent": daily_agent,
+        "daily_model": daily_model,
+        "per_agent_model": per_agent_model,
+        "daily_agent_model": daily_agent_model,
+        "session_infos": session_infos,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -556,8 +633,10 @@ def main() -> int:
                     f"(host={args.import_host or 'file'}): {_icb['new']} new, "
                     f"{_icb['updated']} updated -> {_icb['path']}"
                 )
-        # Fold in-range imported rows into the in-memory aggregation so the
-        # report includes every machine.
+        # Fold in-range imported rows into the in-memory aggregation. This is
+        # only needed as a fallback for --no-raw-data runs (where the store is
+        # NOT written and we report the in-memory result instead). For normal
+        # runs the store is the source of truth and is read back below.
         for _r in imported_rows:
             _ts = parse_timestamp(_r["started_at"])
             if _ts is None or _ts < start or _ts >= end:
@@ -575,6 +654,46 @@ def main() -> int:
                 per_agent_model, daily_agent_model,
                 turns=_r["turns"], cache_read=_r["cache_read_tokens"],
             )
+
+    # --- Persistent raw-data store (merged across runs) ---
+    # Every in-range session scanned locally is upserted into data/data.csv.
+    # This store is the SINGLE SOURCE OF TRUTH for the report: the analysis
+    # below reads it back, so any machine previously merged in (e.g.
+    # ky########in) appears in every later report without re-passing --import-data.
+    if not args.no_raw_data:
+        store_result = update_data_store(
+            args.data_dir, session_infos, per_session, host=local_host
+        )
+        cb = store_result["combined"]
+        if cb:
+            print(
+                f"\nRaw data store updated: {cb['new']} new, "
+                f"{cb['updated']} updated session(s) -> {cb['path']}"
+            )
+            print(f"  Per-agent CSVs under: {args.data_dir}")
+
+    # --- Build the report aggregation FROM the store (single source of truth) ---
+    if args.no_raw_data:
+        # Store untouched this run: report the in-memory scan (+ imported) result.
+        report = {
+            "daily": daily, "per_session": per_session, "per_model": per_model,
+            "per_agent": per_agent, "daily_agent": daily_agent,
+            "daily_model": daily_model, "per_agent_model": per_agent_model,
+            "daily_agent_model": daily_agent_model, "session_infos": session_infos,
+        }
+    else:
+        # Read the store back so all merged machines are covered; the --agent
+        # filter is applied at read time to keep per-agent reports correct.
+        report = aggregate_store(args.data_dir, start, end, agent_filter=args.agent)
+    daily = report["daily"]
+    per_session = report["per_session"]
+    per_model = report["per_model"]
+    per_agent = report["per_agent"]
+    daily_agent = report["daily_agent"]
+    daily_model = report["daily_model"]
+    per_agent_model = report["per_agent_model"]
+    daily_agent_model = report["daily_agent_model"]
+    session_infos = report["session_infos"]
 
     if not daily:
         print(
@@ -603,23 +722,6 @@ def main() -> int:
         _pricing.lookup(_m)
 
     notes = availability_notes()
-
-    # --- Persistent raw-data store (merged across runs) ---
-    # Saves every in-range session as a CSV row keyed by (host, session_key),
-    # upserting into data/data.csv (combined) and data/<group>/data.csv (per
-    # agent). Runs independently of --no-save so the history is preserved even
-    # for terminal-only reports.
-    if not args.no_raw_data:
-        store_result = update_data_store(
-            args.data_dir, session_infos, per_session, host=local_host
-        )
-        cb = store_result["combined"]
-        if cb:
-            print(
-                f"\nRaw data store updated: {cb['new']} new, "
-                f"{cb['updated']} updated session(s) -> {cb['path']}"
-            )
-            print(f"  Per-agent CSVs under: {args.data_dir}")
 
     # Per-host aggregation (one bucket per machine) for the report.
     per_host: dict[str, UsageBucket] = {}

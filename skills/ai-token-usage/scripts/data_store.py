@@ -319,3 +319,22 @@ def load_imported_csv(
                 }
             )
     return rows
+
+
+def load_store_csv(data_dir) -> list[dict[str, Any]]:
+    """Read the combined ``data/data.csv`` back into row dicts.
+
+    Unlike ``load_imported_csv`` this does NOT mask the ``host`` column — the
+    values are already masked in the store, and re-masking would change labels
+    (and could split a machine's history). Used to build the report aggregation
+    from the store, which is the single source of truth for reporting.
+    """
+    path = Path(data_dir) / "data.csv"
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for r in reader:
+            rows.append(dict(r))
+    return rows
