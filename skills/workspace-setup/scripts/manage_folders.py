@@ -221,19 +221,50 @@ def scan_dir(workspace: Path, current: Path, entries: list[dict[str, Any]]) -> b
     return child_has_content
 
 
-def scan_agent_docs(workspace: Path, canonical_dir: Path | None) -> list[dict[str, Any]]:
-    """Find non-git AGENTS.md/CLAUDE.md files and store canonical copies.
+# Characters that are illegal in Windows file names; replaced so canonical
+# file names stay valid cross-platform.
+_ILLEGAL_NAME_CHARS = set(':*?"<>|')
 
-    Only docs that are NOT inside any git repo are recorded (git-tracked docs
-    are already version controlled). Each recorded doc is copied to
-    *canonical_dir*; the returned mapping lets `rebuild` recreate a symlink at
-    the original location so the doc stays a single source of truth.
+
+def _safe_segment(seg: str) -> str:
+    return "".join("_" if ch in _ILLEGAL_NAME_CHARS else ch for ch in seg)
+
+
+def scan_agent_docs(workspace: Path, canonical_dir: Path | None,
+                    dry_run: bool = False) -> list[dict[str, Any]]:
+    """Find AGENTS.md/CLAUDE.md files that live outside any git repo and store
+    canonical copies.
+
+    Only docs that are NOT inside a git working tree are recorded (a doc inside a
+    repo is already carried by that repo, tracked or not). Each recorded doc is
+    copied to *canonical_dir*; the returned mapping lets `rebuild` recreate a
+    symlink at the original location so the doc stays a single source of truth.
+
+    When *dry_run* is True the mapping is still computed but nothing is written.
     """
     results: list[dict[str, Any]] = []
     if not canonical_dir:
         return results
     canonical_dir = resolve(canonical_dir)
-    seen: set[str] = set()
+    seen: set[str] = set()          # canonical workspace-relative paths
+    seen_names: set[str] = set()    # canonical file names (collision guard)
+
+    def _canon_name(folder_rel: str, doc_name: str) -> str:
+        # Encode the folder path into a single, filesystem-safe name.
+        if folder_rel in (".", ""):
+            base = "ROOT"  # doc lives at the workspace root (avoid a hidden ".AGENTS.md")
+        else:
+            safe = [_safe_segment(p) for p in folder_rel.replace("\\", "/").split("/")]
+            base = "__".join(safe)
+        name = f"{base}.{doc_name}"
+        # Disambiguate the rare case where two distinct folder paths collapse
+        # to the same name (e.g. "a/b" and "a__b").
+        while name in seen_names:
+            i = 2
+            while f"{base}.{i}.{doc_name}" in seen_names:
+                i += 1
+            name = f"{base}.{i}.{doc_name}"
+        return name
 
     def walk(directory: Path) -> None:
         try:
@@ -268,22 +299,29 @@ def scan_agent_docs(workspace: Path, canonical_dir: Path | None) -> list[dict[st
                 walk(child)
             elif child.name in AGENT_DOC_NAMES:
                 if inside_git_repo(child):
-                    continue  # already version controlled by its repo
+                    continue  # doc lives inside a git repo; carried by that repo
                 doc_rel = workspace_relative(child, workspace)
                 folder_rel = workspace_relative(child.parent, workspace)
-                canon_name = folder_rel.replace("/", "__").replace("\\", "__") + "." + child.name
+                canon_name = _canon_name(folder_rel, child.name)
+                seen_names.add(canon_name)
                 canon_file = canonical_dir / canon_name
                 canon_rel = workspace_relative(canon_file, workspace)
                 if canon_rel in seen:
                     continue
                 seen.add(canon_rel)
+                if dry_run:
+                    results.append({"target": doc_rel, "canonical": canon_rel})
+                    continue
                 try:
                     text = child.read_text(encoding="utf-8")
                 except OSError:
                     continue
                 canonical_dir.mkdir(parents=True, exist_ok=True)
                 if not canon_file.exists() or canon_file.read_text(encoding="utf-8") != text:
-                    canon_file.write_text(text, encoding="utf-8")
+                    try:
+                        canon_file.write_text(text, encoding="utf-8")
+                    except OSError:
+                        continue
                 results.append({"target": doc_rel, "canonical": canon_rel})
 
     walk(workspace)
@@ -311,8 +349,22 @@ def command_scan(args: argparse.Namespace) -> int:
     entries.sort(key=_sort_key)
 
     output = resolve(args.output)
-    canonical_dir = args.agent_docs_dir or (output.parent.parent / "agent-docs")
-    agent_docs = scan_agent_docs(workspace, canonical_dir)
+    if args.agent_docs_dir:
+        canonical_dir = resolve(args.agent_docs_dir)
+        if not (canonical_dir.resolve() == workspace.resolve()
+                or workspace.resolve() in canonical_dir.resolve().parents):
+            print(f"WARNING: --agent-docs-dir ({canonical_dir}) is outside the "
+                  f"workspace; canonical copies will not be portable to another "
+                  f"machine.", file=sys.stderr)
+    else:
+        canonical_dir = output.parent.parent / "agent-docs"
+        if not (canonical_dir.resolve() == workspace.resolve()
+                or workspace.resolve() in canonical_dir.resolve().parents):
+            print(f"WARNING: default agent-docs dir ({canonical_dir}) is outside "
+                  f"the workspace; skipping agent docs. Pass --agent-docs-dir inside "
+                  f"the workspace to enable this feature.", file=sys.stderr)
+            canonical_dir = None
+    agent_docs = scan_agent_docs(workspace, canonical_dir, dry_run=args.dry_run)
 
     manifest = {
         "schema_version": 1,
@@ -570,8 +622,10 @@ def parser() -> argparse.ArgumentParser:
                            f"Default: {DEFAULT_CONFIGS_DIR}/<workspace-name>.json")
     scan.add_argument("--agent-docs-dir", type=Path, default=None,
                       help="Directory to store canonical copies of non-git "
-                           "AGENTS.md/CLAUDE.md. Default: <output>/../agent-docs "
-                           "(i.e. agent-docs sibling of the output folder).")
+                           "AGENTS.md/CLAUDE.md. Default: <output>/../../agent-docs "
+                           "(agent-docs as a sibling of the output folder's parent, "
+                           "e.g. KylinDevTool/agent-docs when output is "
+                           "workspaces/dev.json). Must be inside the workspace.")
     scan.add_argument("--dry-run", action="store_true",
                       help="Print the JSON to stdout instead of writing.")
 

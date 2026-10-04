@@ -72,11 +72,12 @@ docs that live in folders which are *not* inside any git repo (e.g.
 `Workspace/AGENTS.md`) — these would otherwise be lost when you switch laptops.
 Each such doc is copied to a canonical directory and recorded in
 `agent_docs` so rebuild can recreate it as a **symlink** at its original path.
-Git-tracked docs are skipped (already version-controlled). Docs already present
-as symlinks are skipped to avoid loops.
+Docs that live inside a git repo are skipped (carried by that repo, whether
+tracked or not). Docs already present as symlinks are skipped to avoid loops.
 
 ```bash
-# Store canonical agent-doc copies in a specific dir (default: <output>/../agent-docs)
+# Store canonical agent-doc copies in a specific dir (default: <output>/../../agent-docs,
+# i.e. agent-docs as a sibling of the output folder's parent)
 python3 <skill>/scripts/manage_folders.py scan \
   --workspace ~/dev \
   --output ./configs/dev.json \
@@ -164,6 +165,9 @@ After running an operation, summarize:
 
 - The generated config contains repo remotes — treat it like any file that
   references your repositories; it is gitignored by this repo and not committed.
-- `scan` is read-only against your workspace. `rebuild` only clones into empty
-  paths; it never deletes or overwrites existing repos.
+- `scan` is read-only against the workspace being scanned — it never mutates
+  that tree. Canonical agent-doc copies are written to the agent-docs dir (an
+  output artifact, not inside the scanned workspace); with `--dry-run` nothing
+  is written at all. `rebuild` only clones into empty paths; it never deletes or
+  overwrites existing repos.
 - This skill has no external tool dependencies beyond `git` and Python 3.
