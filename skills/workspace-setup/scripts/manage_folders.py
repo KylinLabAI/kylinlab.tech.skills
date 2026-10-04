@@ -37,6 +37,10 @@ SKIP_DIRS = {
     "node_modules", "build", "dist", "target", ".venv", "venv",
 }
 
+# Agent guidance docs that should survive on non-git folders via a canonical
+# copy + symlink. Git-tracked docs are left alone (already version controlled).
+AGENT_DOC_NAMES = {"AGENTS.md", "CLAUDE.md"}
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIGS_DIR = SCRIPT_DIR.parent / "configs"
 
@@ -109,6 +113,18 @@ def repo_branch(path: Path) -> str | None:
     if result.returncode == 0 and result.stdout.strip():
         return f"detached@{result.stdout.strip()}"
     return None
+
+
+def inside_git_repo(path: Path) -> bool:
+    """True if *path* lives inside a git working tree (tracked or not)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +221,76 @@ def scan_dir(workspace: Path, current: Path, entries: list[dict[str, Any]]) -> b
     return child_has_content
 
 
+def scan_agent_docs(workspace: Path, canonical_dir: Path | None) -> list[dict[str, Any]]:
+    """Find non-git AGENTS.md/CLAUDE.md files and store canonical copies.
+
+    Only docs that are NOT inside any git repo are recorded (git-tracked docs
+    are already version controlled). Each recorded doc is copied to
+    *canonical_dir*; the returned mapping lets `rebuild` recreate a symlink at
+    the original location so the doc stays a single source of truth.
+    """
+    results: list[dict[str, Any]] = []
+    if not canonical_dir:
+        return results
+    canonical_dir = resolve(canonical_dir)
+    seen: set[str] = set()
+
+    def walk(directory: Path) -> None:
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            return
+        for name in names:
+            if name in SKIP_DIRS:
+                continue
+            child = directory / name
+            if child.is_symlink():
+                # Don't follow symlinked dirs (avoids loops / container folders).
+                if child.name in AGENT_DOC_NAMES:
+                    # Re-record a doc that already points into the canonical dir,
+                    # so its mapping survives later re-scans after it was symlinked.
+                    try:
+                        real = child.resolve()
+                    except OSError:
+                        continue
+                    if real.is_file() and canonical_dir in real.parents:
+                        canon_rel = workspace_relative(real, workspace)
+                        if canon_rel not in seen:
+                            seen.add(canon_rel)
+                            results.append({
+                                "target": workspace_relative(child, workspace),
+                                "canonical": canon_rel,
+                            })
+                continue
+            if child.is_dir():
+                if is_git_repo(child):
+                    continue  # whole repo subtree handled by git; skip
+                walk(child)
+            elif child.name in AGENT_DOC_NAMES:
+                if inside_git_repo(child):
+                    continue  # already version controlled by its repo
+                doc_rel = workspace_relative(child, workspace)
+                folder_rel = workspace_relative(child.parent, workspace)
+                canon_name = folder_rel.replace("/", "__").replace("\\", "__") + "." + child.name
+                canon_file = canonical_dir / canon_name
+                canon_rel = workspace_relative(canon_file, workspace)
+                if canon_rel in seen:
+                    continue
+                seen.add(canon_rel)
+                try:
+                    text = child.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                canonical_dir.mkdir(parents=True, exist_ok=True)
+                if not canon_file.exists() or canon_file.read_text(encoding="utf-8") != text:
+                    canon_file.write_text(text, encoding="utf-8")
+                results.append({"target": doc_rel, "canonical": canon_rel})
+
+    walk(workspace)
+    results.sort(key=lambda e: str(e["target"]))
+    return results
+
+
 def command_scan(args: argparse.Namespace) -> int:
     workspace = resolve(args.workspace)
     if not workspace.is_dir():
@@ -224,6 +310,10 @@ def command_scan(args: argparse.Namespace) -> int:
 
     entries.sort(key=_sort_key)
 
+    output = resolve(args.output)
+    canonical_dir = args.agent_docs_dir or (output.parent.parent / "agent-docs")
+    agent_docs = scan_agent_docs(workspace, canonical_dir)
+
     manifest = {
         "schema_version": 1,
         "workspace": user_relative(workspace),
@@ -232,9 +322,9 @@ def command_scan(args: argparse.Namespace) -> int:
         "repos": sum(1 for e in entries if e["type"] == "repo"),
         "symlinks": sum(1 for e in entries if e["type"] == "symlink"),
         "entries": entries,
+        "agent_docs": agent_docs,
     }
 
-    output = resolve(args.output)
     if args.dry_run:
         print(json.dumps(manifest, indent=2))
         print(f"\nWould write to: {output}")
@@ -247,6 +337,7 @@ def command_scan(args: argparse.Namespace) -> int:
     print(f"Folders   : {manifest['folders']}")
     print(f"Repos     : {manifest['repos']}")
     print(f"Symlinks  : {manifest['symlinks']}")
+    print(f"AgentDocs : {len(agent_docs)}")
     print(f"Written   : {output}")
 
     missing = [e["path"] for e in entries if e.get("type") == "repo" and not e.get("remote")]
@@ -279,6 +370,29 @@ def path_has_content(path: Path) -> bool:
     if path.is_dir():
         return any(path.iterdir())
     return True
+
+
+def create_symlink_strict(link_path: Path, value: str) -> None:
+    """Create a symlink, refusing to silently fall back to a copy.
+
+    On failure the process stops with a platform-specific hint so the user
+    fixes the environment (e.g. enable Windows Developer Mode) instead of
+    ending up with an out-of-sync copy.
+    """
+    try:
+        link_path.symlink_to(value)
+    except OSError as exc:
+        if sys.platform == "win32":
+            raise SystemExit(
+                f"FATAL: cannot create symlink {link_path} -> {value}\n"
+                f"  Enable Windows 'Developer Mode' (Settings -> Update & Security "
+                f"-> For developers) or re-run elevated, then retry."
+            ) from exc
+        raise SystemExit(
+            f"FATAL: cannot create symlink {link_path} -> {value}: {exc}\n"
+            f"  Check write permission on the target directory, or that a real "
+            f"file does not already exist at that path."
+        ) from exc
 
 
 def command_rebuild(args: argparse.Namespace) -> int:
@@ -396,6 +510,39 @@ def command_rebuild(args: argparse.Namespace) -> int:
             except OSError as exc:
                 print(f"  FAILED: {rel_path} - {exc}")
 
+    # ---- Phase 4: agent docs (canonical -> symlink) -----------------------
+    agent_docs = [e for e in (manifest.get("agent_docs") or []) if isinstance(e, dict)]
+    if agent_docs:
+        print("\n=== Agent docs (symlinks) ===")
+        for entry in agent_docs:
+            rel_target = str(entry["target"])
+            rel_canon = str(entry.get("canonical") or "")
+            link_path = target / rel_target
+            canon_abs = target / rel_canon
+
+            if not canon_abs.exists():
+                print(f"  SKIPPED: {rel_target} - canonical missing: {rel_canon}")
+                continue
+            if link_path.is_symlink():
+                print(f"  skipped (symlink exists): {rel_target}")
+                continue
+            if link_path.exists():
+                print(f"  BLOCKED: {rel_target} - real file exists, not overwriting")
+                continue
+
+            try:
+                symlink_value = os.path.relpath(str(canon_abs), str(link_path.parent))
+            except ValueError:
+                symlink_value = str(canon_abs)
+
+            if args.dry_run:
+                print(f"  [dry-run] symlink: {rel_target} -> {symlink_value}")
+                continue
+
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            create_symlink_strict(link_path, symlink_value)
+            print(f"  linked: {rel_target} -> {symlink_value}")
+
     if args.dry_run:
         print("\n[dry-run] No changes were made.")
     else:
@@ -421,6 +568,10 @@ def parser() -> argparse.ArgumentParser:
     scan.add_argument("--output", type=Path, default=None,
                       help="Path to write the config JSON file. "
                            f"Default: {DEFAULT_CONFIGS_DIR}/<workspace-name>.json")
+    scan.add_argument("--agent-docs-dir", type=Path, default=None,
+                      help="Directory to store canonical copies of non-git "
+                           "AGENTS.md/CLAUDE.md. Default: <output>/../agent-docs "
+                           "(i.e. agent-docs sibling of the output folder).")
     scan.add_argument("--dry-run", action="store_true",
                       help="Print the JSON to stdout instead of writing.")
 

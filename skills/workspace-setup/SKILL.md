@@ -67,6 +67,22 @@ Symlink targets are stored **relative to the workspace root** so the config
 stays portable across machines. On rebuild, the workspace-relative target is
 resolved against the new target directory.
 
+**Agent docs (non-git `AGENTS.md` / `CLAUDE.md`):** scan also discovers guidance
+docs that live in folders which are *not* inside any git repo (e.g.
+`Workspace/AGENTS.md`) — these would otherwise be lost when you switch laptops.
+Each such doc is copied to a canonical directory and recorded in
+`agent_docs` so rebuild can recreate it as a **symlink** at its original path.
+Git-tracked docs are skipped (already version-controlled). Docs already present
+as symlinks are skipped to avoid loops.
+
+```bash
+# Store canonical agent-doc copies in a specific dir (default: <output>/../agent-docs)
+python3 <skill>/scripts/manage_folders.py scan \
+  --workspace ~/dev \
+  --output ./configs/dev.json \
+  --agent-docs-dir ./agent-docs
+```
+
 **What gets excluded:**
 
 - Folders that contain no repos at any depth.
@@ -103,6 +119,15 @@ python3 <skill>/scripts/manage_folders.py rebuild \
   --target ~/dev-restored \
   --dry-run
 ```
+
+**Agent docs phase:** after repos and symlinks, rebuild recreates each
+`agent_docs` entry at its original location as a **symbolic link** to the
+canonical copy. It is **symlink-only — no copy fallback**: if a symlink cannot
+be created (e.g. Windows without Developer Mode), rebuild prints a platform-
+specific fatal hint and stops. On Windows, enable *Settings → Update & Security
+→ For developers → Developer Mode* (or run elevated) and retry; on macOS/Linux
+no special prerequisite is needed. A pre-existing real file at the target is
+left untouched (not overwritten), and a missing canonical is skipped.
 
 ### 3. Config file format
 
