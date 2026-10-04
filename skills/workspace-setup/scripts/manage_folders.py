@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -579,8 +580,45 @@ def command_rebuild(args: argparse.Namespace) -> int:
                 print(f"  skipped (symlink exists): {rel_target}")
                 continue
             if link_path.exists():
-                print(f"  BLOCKED: {rel_target} - real file exists, not overwriting")
-                continue
+                if link_path.is_dir():
+                    print(f"  BLOCKED: {rel_target} - a directory occupies this path; "
+                          f"cannot replace with a symlink")
+                    continue
+                # Use case 2: ~/dev already has a real AGENTS.md here.
+                # Never merge automatically - the canonical in KylinDevTool is
+                # the single source of truth and rebuild must not write into it.
+                same = False
+                try:
+                    same = link_path.read_text(encoding="utf-8") == canon_abs.read_text(encoding="utf-8")
+                except OSError:
+                    same = False
+                if same:
+                    # Identical content -> safe to convert the real file into a symlink.
+                    if args.dry_run:
+                        print(f"  [dry-run] replace identical real file with symlink: {rel_target}")
+                        continue
+                    link_path.unlink()
+                else:
+                    # Differs -> back up locally, symlink to canonical, warn.
+                    # User merges the backup into canonical themselves if wanted.
+                    conflicts_dir = canon_abs.parent / ".conflicts"
+                    conflicts_dir.mkdir(parents=True, exist_ok=True)
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    backup_name = Path(rel_target).as_posix().replace("/", "__") + f".{stamp}.bak"
+                    backup_path = conflicts_dir / backup_name
+                    if args.dry_run:
+                        print(f"  [dry-run] DIFFERS: back up {rel_target} -> {backup_path}; "
+                              f"then symlink to {rel_canon}")
+                        continue
+                    shutil.copy2(link_path, backup_path)
+                    link_path.unlink()
+                    print(f"  WARN: {rel_target} differed from canonical {rel_canon}")
+                    print(f"        backed up to {backup_path}")
+                    print(f"        The file at {rel_target} is now a symlink to the canonical; "
+                          f"if symlink creation fails below, the doc is temporarily absent "
+                          f"and only the backup remains.")
+                    print(f"        Merge the backup into the canonical yourself if you want it "
+                          f"kept, then delete the backup. Not merging automatically.")
 
             try:
                 symlink_value = os.path.relpath(str(canon_abs), str(link_path.parent))

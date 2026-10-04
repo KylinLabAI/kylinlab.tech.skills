@@ -73,7 +73,9 @@ docs that live in folders which are *not* inside any git repo (e.g.
 Each such doc is copied to a canonical directory and recorded in
 `agent_docs` so rebuild can recreate it as a **symlink** at its original path.
 Docs that live inside a git repo are skipped (carried by that repo, whether
-tracked or not). Docs already present as symlinks are skipped to avoid loops.
+tracked or not). Symlinks are not followed while scanning (to avoid loops); a
+doc that is already a symlink pointing into the canonical dir is re-recorded so
+its mapping survives later re-scans after it was symlinked.
 
 ```bash
 # Store canonical agent-doc copies in a specific dir (default: <output>/../../agent-docs,
@@ -127,8 +129,19 @@ canonical copy. It is **symlink-only — no copy fallback**: if a symlink cannot
 be created (e.g. Windows without Developer Mode), rebuild prints a platform-
 specific fatal hint and stops. On Windows, enable *Settings → Update & Security
 → For developers → Developer Mode* (or run elevated) and retry; on macOS/Linux
-no special prerequisite is needed. A pre-existing real file at the target is
-left untouched (not overwritten), and a missing canonical is skipped.
+no special prerequisite is needed. For a **pre-existing real file** at the
+target (use case: rebuilding on top of an existing `~/dev`), rebuild does **not**
+merge or overwrite the canonical:
+- if its content is **identical** to the canonical, the real file is silently
+  replaced by a symlink;
+- if it **differs**, the local file is backed up to
+  `<agent-docs>/.conflicts/<relpath-with-slashes-as-__>__AGENTS.md.<timestamp>.bak`
+  (e.g. `Sub__AGENTS.md.20261004-141546.bak`), then the original path is replaced
+  by a symlink to the canonical, and a warning is printed. Note: if symlink
+  creation then fails, the doc is temporarily absent at its original path and
+  only the `.conflicts` backup remains. Merging that backup into the canonical is
+  the **user's** responsibility — rebuild never edits the canonical copy (it
+  stays the single source of truth). A missing canonical is skipped.
 
 ### 3. Config file format
 
