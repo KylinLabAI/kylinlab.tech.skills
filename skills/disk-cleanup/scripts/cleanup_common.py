@@ -29,6 +29,8 @@ class CleanupTarget:
     patterns: tuple[str, ...]
     description: str
     mode: str = "old-files"
+    remove_dirs_named: str | None = None
+    skip_dirs_named: tuple[str, ...] = ()
 
 
 @dataclass
@@ -150,8 +152,18 @@ def scan_old_files(root: Path, target: CleanupTarget, cutoff: float, apply: bool
         report.errors.append("Target is not a directory")
         return report
 
-    for dirpath, _, filenames in os.walk(root, topdown=False, followlinks=False):
+    # topdown=True lets us prune excluded subtrees before descending. We collect
+    # visited dirs and remove empties in a post-pass (deepest first) so that a
+    # parent directory is only removed after its children are gone.
+    visited_dirs: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         current_dir = Path(dirpath)
+        # Skip whole subtrees the target asked to exclude (e.g. the snapshot
+        # screenshot cache, which is handled wholesale by a dedicated target).
+        if current_dir.name in target.skip_dirs_named:
+            dirnames[:] = []
+            continue
+        visited_dirs.append(current_dir)
         for filename in filenames:
             path = current_dir / filename
             try:
@@ -176,7 +188,10 @@ def scan_old_files(root: Path, target: CleanupTarget, cutoff: float, apply: bool
                 except OSError as exc:
                     report.errors.append(f"{display_path(path)}: delete failed: {exc}")
 
-        if apply and current_dir != root:
+    if apply:
+        for current_dir in reversed(visited_dirs):
+            if current_dir == root:
+                continue
             try:
                 current_dir.rmdir()
                 report.dirs_removed += 1
@@ -362,4 +377,137 @@ def scan_orphan(root: Path, target: CleanupTarget, cutoff: float, apply: bool, c
             report.errors.extend(sub.errors)
         else:
             report.skipped_kept += 1
+    return report
+
+
+def scan_nested_dirs(root: Path, target: CleanupTarget, apply: bool) -> TargetReport:
+    """Remove whole subdirectories by name found anywhere under ``root``.
+
+    Used for nested cache folders that live inside a user-data tree but are
+    themselves pure cache (e.g. CodeBuddy extension snapshot screenshots at
+    ``Data/*/.../history/*/*/assets``). The directory name to match comes from
+    ``target.remove_dirs_named`` (default ``assets``) and the match is further
+    constrained to directories that sit beneath an ancestor named ``history``,
+    so unrelated ``assets`` folders elsewhere in the tree are never touched.
+
+    The whole matched directory is removed at once; no age threshold applies.
+    Never follows symlinks and never removes the ``root`` itself.
+    """
+    dir_name = target.remove_dirs_named or "assets"
+    report = TargetReport(
+        key=target.key,
+        profile=target.profile,
+        root=display_path(root),
+        mode=target.mode,
+        description=target.description,
+        exists=root.exists(),
+    )
+    if not root.exists():
+        return report
+    if is_symlink(root):
+        report.skipped_symlink += 1
+        return report
+    if not root.is_dir():
+        report.errors.append("Target is not a directory")
+        return report
+
+    for dirpath, dirnames, _ in os.walk(root, topdown=True, followlinks=False):
+        current = Path(dirpath)
+        if current.name != dir_name:
+            continue
+        if not any(parent.name == "history" for parent in current.parents):
+            continue
+        report.bytes_reclaimable += dir_size_no_follow(current)
+        report.items_matched += 1
+        if apply:
+            try:
+                shutil.rmtree(current)
+                report.dirs_removed += 1
+                # Remove now-empty ancestor directories left behind by the
+                # deleted assets folder, stopping at (and not removing) the
+                # `history` ancestor so other sessions are never touched.
+                ancestor = current.parent
+                while ancestor.name and ancestor.name != "history" and ancestor != root:
+                    try:
+                        ancestor.rmdir()
+                        report.dirs_removed += 1
+                    except OSError:
+                        break
+                    ancestor = ancestor.parent
+            except OSError as exc:
+                report.errors.append(f"{display_path(current)}: delete failed: {exc}")
+        dirnames[:] = []  # do not descend into an (about-to-be) removed dir
+    return report
+
+
+# Top-level entries directly under ~/Library/Application Support that are not
+# per-app directories (they are covered by dedicated targets such as
+# macos-user-logs) and must be skipped by the generic per-app scan.
+_APP_SUPPORT_NON_APP_DIRS = (
+    "CrashReporter",
+    "DiagnosticReports",
+)
+
+
+# Subfolder names that are regenerable / diagnostics when found directly under
+# an app's ~/Library/Application Support/<app> directory. Anything else under
+# that tree is treated as user data and never touched by this scan.
+APP_SUPPORT_SAFE_SUBDIRS = (
+    "Logs",
+    "logs",
+    "Cache",
+    "Caches",
+    "CrashReport",
+    "CrashReporter",
+    "DiagnosticReports",
+)
+
+
+def scan_appsupport(root: Path, target: CleanupTarget, cutoff: float, apply: bool) -> TargetReport:
+    """Age-expire Logs/Cache/CrashReport subfolders of every app in root.
+
+    ``root`` is expected to be a single app directory (the glob
+    ``~/Library/Application Support/*`` feeds one app directory per call). Only
+    the well-known regenerable subfolder names in ``APP_SUPPORT_SAFE_SUBDIRS``
+    are scanned, and only files older than ``cutoff`` are removed — so the rest
+    of an app's data is left untouched. This is app-aware and safe by
+    construction: it never does a blanket ``rm -rf`` of Application Support.
+
+    CodeBuddy apps have dedicated, more thorough targets, so they are skipped
+    here to avoid double counting.
+    """
+    report = TargetReport(
+        key=target.key,
+        profile=target.profile,
+        root=display_path(root),
+        mode=target.mode,
+        description=target.description,
+        exists=root.exists(),
+    )
+    if not root.exists():
+        return report
+    if is_symlink(root):
+        report.skipped_symlink += 1
+        return report
+    if not root.is_dir():
+        report.errors.append("Target is not a directory")
+        return report
+    if root.name.startswith("CodeBuddy"):
+        return report  # dedicated CodeBuddy targets handle these
+    if root.name in _APP_SUPPORT_NON_APP_DIRS:
+        return report  # covered by dedicated top-level targets, not an app dir
+
+    for sub_name in APP_SUPPORT_SAFE_SUBDIRS:
+        child = root / sub_name
+        if is_symlink(child):
+            report.skipped_symlink += 1
+            continue
+        sub = scan_old_files(child, target, cutoff, apply)
+        report.bytes_reclaimable += sub.bytes_reclaimable
+        report.files_matched += sub.files_matched
+        report.items_matched += sub.items_matched
+        report.skipped_recent += sub.skipped_recent
+        report.skipped_symlink += sub.skipped_symlink
+        report.dirs_removed += sub.dirs_removed
+        report.errors.extend(sub.errors)
     return report

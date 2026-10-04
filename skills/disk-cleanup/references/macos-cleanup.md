@@ -36,6 +36,91 @@ These are scanned by the bundled helper under the `safe` profile. The helper is
 - `~/Library/DiagnosticReports` — diagnostic reports (age-limited).
 - `$TMPDIR` — current user's temporary directory (age-limited).
 
+## Per-App Logs and Caches Under Application Support
+
+In addition to the named paths above, the helper scans **every** app directory
+under `~/Library/Application Support/*` for the well-known regenerable
+subfolders and age-expires (default 7 days) the files inside them:
+
+- `Logs`, `logs`
+- `Cache`, `Caches`
+- `CrashReport`, `CrashReporter`, `DiagnosticReports`
+
+This is app-aware and safe by construction: only those specific subfolder names
+are descended into, so an app's other data (settings, `Data`, databases,
+`sessions.vscdb`, `Cookies`, `Local Storage`, etc.) is never touched. It never
+runs a blanket `rm -rf ~/Library/Application Support/*`. CodeBuddy apps are
+handled by their dedicated, more thorough targets (see below) and are skipped by
+this generic scan to avoid double counting.
+
+```bash
+python3 ./scripts/storage_cleanup.py --min-age-days 7
+python3 ./scripts/storage_cleanup.py --min-age-days 7 --apply
+```
+
+If a scan reports an unexpected app folder, review the matched subpaths before
+applying — a handful of apps misuse these names for non-cache data, and the
+age limit (recent files kept) is the safety net.
+
+## CodeBuddy App Logs, Crash Dumps, and Caches
+
+CodeBuddy ships two data areas under `~/Library/Application Support`: a VS
+Code/Cursor **extension** (`CodeBuddyExtension`) and the standalone **CN Electron
+app** (`CodeBuddy CN`). Of their subfolders, only a few are safe to clean and
+they fall into clear groups. The helper covers the safe ones under the `safe`
+profile (default run, age-limited); the user-data folder is opt-in only
+(`--include-app-data`).
+
+### Safe — remove by age (covered by the `safe` profile)
+
+| Path | What it is | Why safe |
+| --- | --- | --- |
+| `CodeBuddyExtension/Logs` | Extension `.log` files | Pure diagnostics; a fresh log is written each launch. |
+| `CodeBuddyExtension/Cache` | Extension cache | Regenerable; keeps only recent files by age. |
+| `CodeBuddy CN/logs` | CN app `.log` files | Pure diagnostics. |
+| `CodeBuddy CN/CrashReport` | `.dmp`/`.dat` crash dumps | Always junk once a crash is past; age-limited keeps the newest for debugging. |
+| `CodeBuddy CN/Cache`, `CachedData`, `Code Cache`, `GPUCache`, `DawnGraphiteCache`, `DawnWebGPUCache` | Electron HTTP / V8 / GPU / WebGPU caches | Regenerable; rebuild on next launch. |
+
+```bash
+python3 ./scripts/storage_cleanup.py --min-age-days 7
+python3 ./scripts/storage_cleanup.py --min-age-days 7 --apply
+```
+
+### Keep — user data (never auto-deleted)
+
+- `CodeBuddyExtension/Data` — conversation history and generated artifacts
+  (`.json`/`.md`/`.py`/`.rs`/`.yml`, tens of thousands of files). This is the
+  user's actual work output, not cache. **Do not add it to a default scan.**
+  Only offer `--include-app-data` when the user explicitly wants to purge old
+  history, and even then only files older than the age threshold are removed:
+  ```bash
+  python3 ./scripts/storage_cleanup.py --include-app-data --min-age-days 7
+  ```
+
+### Snapshot screenshot cache — remove wholesale (opt-in)
+
+Inside `Data`, the path `Data/<id>/CodeBuddyIDE/<id>/history/<id>/<id>/assets`
+holds captured **snapshot screenshots** (e.g. `Screenshot 2026-09-23 at
+….png`). These are preview thumbnails of conversation turns, not conversation
+content, so they are safe to delete entirely. The helper removes every such
+`assets` folder at once (no age limit) when `--include-app-data` is set:
+
+```bash
+python3 ./scripts/storage_cleanup.py --include-app-data --min-age-days 7
+python3 ./scripts/storage_cleanup.py --include-app-data --min-age-days 7 --apply
+```
+
+The match is scoped to `assets` folders that sit beneath a `history` ancestor,
+so unrelated `assets` directories elsewhere in `Data` are never touched.
+
+### Keep — session state (do not touch)
+
+Within `CodeBuddy CN`, these hold session/login state and must be left alone:
+`Cookies`, `Local Storage`, `Session Storage`, `WebStorage`, `User`,
+`codebuddy-sessions.vscdb`, `machineid`, `last-session.json`, `Preferences`,
+`TransportSecurity`, `Trust Tokens`, `Network Persistent State`, `SharedStorage`,
+and the various `*-wal`/`-journal` companions.
+
 ## Developer Caches
 
 Scanned under the `developer` profile (`--include-developer`). Expect first builds or IDE startup to be slower after cleanup:

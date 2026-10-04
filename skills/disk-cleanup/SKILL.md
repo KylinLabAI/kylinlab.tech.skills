@@ -118,6 +118,56 @@ python3 ./scripts/storage_cleanup.py --include-package-caches --min-age-days 30
 python3 ./scripts/storage_cleanup.py --include-package-caches --min-age-days 30 --apply
 ```
 
+### App Logs and Caches (per-app under Application Support)
+
+Beyond CodeBuddy, the `safe` profile also scans **every** app directory under
+`~/Library/Application Support/*` for the well-known regenerable subfolders —
+`Logs`, `logs`, `Cache`, `Caches`, `CrashReport`, `CrashReporter`,
+`DiagnosticReports` — and age-expires files inside them (default 7 days). This is
+app-aware: only those named subfolders are touched; all other app data (and the
+`Data`/user-content trees) is left alone. It never does a blanket `rm -rf` of
+Application Support.
+
+```bash
+python3 ./scripts/storage_cleanup.py --min-age-days 7
+python3 ./scripts/storage_cleanup.py --min-age-days 7 --apply
+```
+
+CodeBuddy apps get the same treatment from their dedicated targets (plus their
+Electron caches and snapshot-image cache), so they are skipped by the generic
+scan to avoid double counting.
+
+### App Logs and Caches (CodeBuddy)
+
+CodeBuddy-related log, crash, and cache folders are covered by the `safe`
+profile (no extra flag needed). They are age-limited so recent files survive:
+
+- `~/Library/Application Support/CodeBuddyExtension/Logs` — extension logs (regen each launch).
+- `~/Library/Application Support/CodeBuddyExtension/Cache` — extension cache.
+- `~/Library/Application Support/CodeBuddy CN/logs` — CN app logs.
+- `~/Library/Application Support/CodeBuddy CN/CrashReport` — crash dumps (junk).
+- `~/Library/Application Support/CodeBuddy CN/{Cache,CachedData,Code Cache,GPUCache,DawnGraphiteCache,DawnWebGPUCache}` — regenerable Electron caches.
+
+```bash
+python3 ./scripts/storage_cleanup.py --min-age-days 7
+python3 ./scripts/storage_cleanup.py --min-age-days 7 --apply
+```
+
+**User data is excluded by default.** `~/Library/Application Support/CodeBuddyExtension/Data`
+holds conversation history and generated artifacts (json/md/py/rs/yml) — treat it
+as user data. It is only cleaned when the user explicitly opts in, and even then
+only files older than the age threshold are removed:
+
+```bash
+python3 ./scripts/storage_cleanup.py --include-app-data --min-age-days 7
+python3 ./scripts/storage_cleanup.py --include-app-data --min-age-days 7 --apply
+```
+
+The `--include-app-data` run also removes the snapshot screenshot cache
+(`Data/*/.../history/*/*/assets`) **wholesale** — these are captured previews,
+not conversation content, so age does not matter and every matching folder is
+deleted at once.
+
 ### Trash Or Recycle Bin
 
 Emptying trash can permanently remove files the user may still expect to recover. Ask explicitly before using this level.

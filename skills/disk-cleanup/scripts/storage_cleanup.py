@@ -25,6 +25,8 @@ from cleanup_common import (
     scan_old_children,
     scan_old_files,
     scan_orphan,
+    scan_nested_dirs,
+    scan_appsupport,
 )
 
 
@@ -49,6 +51,8 @@ def active_profiles(args: argparse.Namespace) -> set[str]:
         profiles.add("package-caches")
     if args.include_trash:
         profiles.add("trash")
+    if args.include_app_data:
+        profiles.add("app-data")
     return profiles
 
 
@@ -74,6 +78,10 @@ def run(args: argparse.Namespace) -> CleanupReport:
                 elif target.mode in ("orphan-caches", "orphan-folders"):
                     clean_by_age = target.mode == "orphan-caches"
                     reports.append(scan_orphan(root, target, cutoff, args.apply, clean_by_age))
+                elif target.mode == "nested-dirs":
+                    reports.append(scan_nested_dirs(root, target, args.apply))
+                elif target.mode == "appsupport-logs-cache":
+                    reports.append(scan_appsupport(root, target, cutoff, args.apply))
                 else:
                     reports.append(scan_old_files(root, target, cutoff, args.apply))
 
@@ -143,6 +151,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--include-developer", action="store_true")
     parser.add_argument("--include-package-caches", action="store_true")
     parser.add_argument("--include-trash", action="store_true")
+    parser.add_argument(
+        "--include-app-data",
+        action="store_true",
+        help="Also age-expire app user data (e.g. CodeBuddy extension history). "
+        "Risky: may drop conversation history. Use only when the user confirms.",
+    )
     parser.add_argument("--apply", action="store_true", help="Delete matched files/items.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of text.")
     parser.add_argument("--list-targets", action="store_true", help="List active cleanup targets and exit.")
