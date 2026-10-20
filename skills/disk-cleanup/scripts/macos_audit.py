@@ -17,7 +17,7 @@ bulk-remove by itself:
   bundle-id name belongs to an app that is no longer installed;
 - developer tool caches: discovered structurally (not a frozen tool list) and
   analysed for **multi-version** directories, flagging which versions are
-  stale (all-but-latest per group) as reclamation candidates.
+  stale (all-but-latest per group) as reclamation candidates (report only).
 
 The orphan-folder findings mirror what ``storage_cleanup.py`` can later remove
 with the app-aware ``orphan-folders`` / ``orphan-caches`` scans, so this script
@@ -47,6 +47,15 @@ LAUNCH_DIRS = [
     "/Library/LaunchAgents",
     "/Library/LaunchDaemons",
     os.path.join(HOME, "Library", "LaunchDaemons"),
+]
+
+# System launch dirs — only used by the disabled-record orphan check so that
+# Apple's own services (e.g. com.apple.ftpd) are not falsely flagged as
+# orphans. Excluded from dead-target/empty-shell checks to avoid noise about
+# macOS-internal daemons the user should never touch.
+LAUNCH_DIRS_SYSTEM = [
+    "/System/Library/LaunchDaemons",
+    "/System/Library/LaunchAgents",
 ]
 
 # Per-app residual folders under ~/Library whose child subfolders are named by
@@ -79,9 +88,11 @@ DEV_CACHE_SEEDS = (
 
 # Parent directories scanned to discover *additional* caches that are not in
 # the seed list (and not app bundle-id caches, which are reported elsewhere).
+# ~/Library/Developer (Xcode/CoreSimulator) is intentionally excluded: its
+# trees are huge, yield no useful version groups, and are handled by the
+# helper's `developer` profile + the reference doc.
 DEV_CACHE_PARENTS = (
     "~/Library/Caches",
-    "~/Library/Developer",
     "~/.cache",
     "~/.local/share",
     "~/go/pkg",
@@ -90,7 +101,22 @@ DEV_CACHE_PARENTS = (
 
 # A cache dir larger than this is reported by size only (version analysis is
 # skipped) to keep the audit fast and bounded.
-DEV_CACHE_MAX_VERSION_SCAN_BYTES = 80 * 1024 * 1024 * 1024  # 80 GB
+DEV_CACHE_MAX_VERSION_SCAN_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
+# Monolithic trees that are slow to walk and never yield useful version groups.
+DEV_CACHE_SKIP_ANALYSIS_SUBSTR = ("Xcode", "CoreSimulator")
+
+# The expensive per-root version walk is run only for seed dirs and for
+# discovered caches whose name looks like a dependency/tool cache (not app
+# caches like Edge/Firefox). Discovery itself stays fully generic — every
+# discovered cache is still sized and listed via `du`.
+DEV_CACHE_ANALYZE_NAMES = (
+    "homebrew", "yarn", "cocoapods", "pip", "playwright", "go-build",
+    "gradle", "cargo", "rustup", "maven", "m2", "npm", "pnpm", "gem",
+    "conda", "mamba", "julia", "dotnet", "nuget", "composer", "helm",
+    "kube", "terraform", "kylin", "opencode", "codebuddy", "claude",
+    "codex", "android", "sbt", "cabal", "stack", "vagrant", "mod",
+)
 
 # Stop walking a cache root deeper than this to bound runtime.
 DEV_CACHE_MAX_DEPTH = 4
@@ -136,6 +162,23 @@ def _plist_value(path: str, key: str) -> str | None:
 
 def _expand(path: str) -> str:
     return os.path.expanduser(os.path.expandvars(path))
+
+
+# Real paths of the seed tool dirs, for cheap membership tests in the audit.
+_SEED_REAL_PATHS = {
+    os.path.realpath(_expand(os.path.join(HOME, s))) for s in DEV_CACHE_SEEDS
+}
+
+
+def _du_size_bytes(path: str) -> int:
+    """Fast native size of ``path`` via ``du -sk`` (avoids slow Python walks)."""
+    out = _run(["du", "-sk", path])
+    if not out:
+        return 0
+    m = re.match(r"(\d+)", out.splitlines()[0])
+    if not m:
+        return 0
+    return int(m.group(1)) * 1024
 
 
 # --- individual checks -----------------------------------------------------
@@ -234,10 +277,11 @@ def check_disabled_orphans() -> list[str]:
         if not out:
             continue
         keys = re.findall(r'"([^"]+)"\s*=>', out)
+        search_dirs = LAUNCH_DIRS + LAUNCH_DIRS_SYSTEM
         for key in keys:
             found = False
             import glob
-            for d in LAUNCH_DIRS:
+            for d in search_dirs:
                 if not os.path.isdir(d):
                     continue
                 for plist in glob.glob(os.path.join(d, "*.plist")):
@@ -310,12 +354,21 @@ def check_dev_cache_sizes() -> list[dict]:
         seen.add(real)
         if not os.path.isdir(path):
             continue
-        total = dir_size_no_follow(path)
+        # Size via native `du` (fast even for multi-GB trees); Python walks are
+        # reserved for the bounded version analysis below.
+        total = _du_size_bytes(path)
         if total <= 0:
             continue
         groups: list[dict] = []
         stale_bytes = 0
-        if total <= DEV_CACHE_MAX_VERSION_SCAN_BYTES:
+        base_lower = os.path.basename(path).lower()
+        analyzable = (
+            total <= DEV_CACHE_MAX_VERSION_SCAN_BYTES
+            and real not in _SEED_REAL_PATHS
+            and not any(s in path for s in DEV_CACHE_SKIP_ANALYSIS_SUBSTR)
+            and any(tok in base_lower for tok in DEV_CACHE_ANALYZE_NAMES)
+        ) or (real in _SEED_REAL_PATHS and total <= DEV_CACHE_MAX_VERSION_SCAN_BYTES)
+        if analyzable:
             groups, stale_bytes = analyze_versions(path)
         caches.append(
             {
@@ -362,7 +415,7 @@ def discover_dev_caches() -> list[str]:
     return found
 
 
-_SEMVER_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.\-]+)?)")
+_SEMVER_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z._\-]+)?)")
 
 
 def _split_version(name: str) -> tuple[str | None, str | None]:
@@ -382,84 +435,77 @@ def _split_version(name: str) -> tuple[str | None, str | None]:
 
 
 def _semver_key(version: str):
+    """Return a comparable key ``((major,minor,patch), release_rank, prerelease)``.
+
+    Releases rank above prereleases (``1.0.0`` > ``1.0.0-beta``); among
+    prereleases, lexical order of the suffix applies.
+    """
     nums = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", version)
     if not nums:
-        return (0, 0, 0)
-    return tuple(int(nums.group(i) or 0) for i in (1, 2, 3))
+        return ((0, 0, 0), 0, version)
+    triple = tuple(int(nums.group(i) or 0) for i in (1, 2, 3))
+    remainder = version[nums.end():]
+    if remainder.startswith(("-", "+")):
+        return (triple, 0, remainder[1:])  # prerelease ranks below release
+    return (triple, 1, "")
 
 
-def _pick_latest(versions: list[tuple[str, str, int, float]]) -> tuple[str, str, int, float]:
-    """Pick the latest version tuple. Prefer semver order, fall back to mtime."""
+def _pick_latest(
+    versions: list[tuple[str, str, float]]
+) -> tuple[str, str, float]:
+    """Pick the latest version tuple. Semver order, then mtime as tiebreak."""
+
+    def key(v: tuple[str, str, float]):
+        sk = _semver_key(v[0])
+        return (sk[0], sk[1], sk[2], v[2])
+
     try:
-        return max(versions, key=lambda v: _semver_key(v[0]))
+        return max(versions, key=key)
     except (ValueError, TypeError):
-        return max(versions, key=lambda v: v[3])
-
-
-def _sizes_once(root: str, max_depth: int) -> dict[str, int]:
-    """Single bottom-up walk computing every subdirectory's size once."""
-    import stat as _stat
-
-    sizes: dict[str, int] = {}
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        depth = dirpath[len(root):].count(os.sep)
-        if depth > max_depth:
-            dirnames[:] = []
-            continue
-        total = 0
-        for fn in filenames:
-            fp = os.path.join(dirpath, fn)
-            try:
-                st = os.lstat(fp)
-            except OSError:
-                continue
-            if _stat.S_ISLNK(st.st_mode) or not _stat.S_ISREG(st.st_mode):
-                continue
-            total += st.st_size
-        sizes[dirpath] = total
-    for dirpath in sorted(sizes, key=lambda p: p.count(os.sep), reverse=True):
-        parent = os.path.dirname(dirpath)
-        if parent in sizes:
-            sizes[parent] += sizes[dirpath]
-    return sizes
+        return max(versions, key=lambda v: v[2])
 
 
 def analyze_versions(root: str) -> tuple[list[dict], int]:
     """Group versioned subdirectories under ``root`` and flag stale ones.
 
-    Returns ``(groups, total_stale_bytes)``. A "group" is a set of sibling
-    directories sharing the same base name but differing in version; the
-    non-latest versions are stale reclamation candidates.
+    Traverses cheaply (no per-file byte counting) and sizes only the stale
+    version directories via native ``du`` (capped to bound runtime). Returns
+    ``(groups, total_stale_bytes)``. A "group" is a set of sibling directories
+    sharing the same base name but differing in version; the non-latest
+    versions are stale reclamation candidates.
     """
-    import stat as _stat
-
-    sizes = _sizes_once(root, DEV_CACHE_MAX_DEPTH)
-    raw: dict[tuple[str, str | None], list[tuple[str, str, int, float]]] = {}
-    for dpath, size in sizes.items():
-        if dpath == root:
+    raw: dict[tuple[str, str | None], list[tuple[str, str, float]]] = {}
+    for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+        depth = dirpath[len(root):].count(os.sep)
+        if depth > DEV_CACHE_MAX_DEPTH:
+            dirnames[:] = []
             continue
-        depth = dpath[len(root):].count(os.sep)
-        if depth < 1 or depth > DEV_CACHE_MAX_DEPTH:
-            continue
-        name = os.path.basename(dpath)
+        name = os.path.basename(dirpath)
         base, version = _split_version(name)
         if version is None:
             continue
         try:
-            mtime = os.lstat(dpath).st_mtime
+            mtime = os.lstat(dirpath).st_mtime
         except OSError:
             mtime = 0.0
-        key = (os.path.dirname(dpath), base)
-        raw.setdefault(key, []).append((version, dpath, size, mtime))
+        raw.setdefault((os.path.dirname(dirpath), base), []).append(
+            (version, dirpath, mtime)
+        )
 
     groups: list[dict] = []
     total_stale = 0
+    measured = 0
+    max_du_calls = 400  # bound runtime on caches with enormous version counts
     for (parent, base), vers in raw.items():
         if len(vers) < 2:
             continue
         latest = _pick_latest(vers)
         stale = [v for v in vers if v[1] != latest[1]]
-        stale_bytes = sum(v[2] for v in stale)
+        stale_bytes = 0
+        for v in stale:
+            if measured < max_du_calls:
+                stale_bytes += _du_size_bytes(v[1])
+                measured += 1
         total_stale += stale_bytes
         groups.append(
             {
@@ -478,16 +524,24 @@ def analyze_versions(root: str) -> tuple[list[dict], int]:
 
 # --- driver ----------------------------------------------------------------
 
+def _safe(fn, default):
+    """Run a check, returning ``default`` if it raises (audit must not crash)."""
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 - a single failing check must not blank the report
+        return default
+
+
 def run_audit() -> AuditReport:
     report = AuditReport()
-    report.installed_apps = count_installed_apps()
-    report.dead_targets = check_dead_targets()
-    report.abnormal_jobs = check_abnormal_jobs()
-    report.empty_plists = check_empty_plists()
-    report.helper_daemon_mismatch = check_helper_daemon_pairing()
-    report.disabled_orphans = check_disabled_orphans()
-    report.orphan_folders = check_orphan_folders()
-    report.dev_caches = check_dev_cache_sizes()
+    report.installed_apps = _safe(count_installed_apps, 0)
+    report.dead_targets = _safe(check_dead_targets, [])
+    report.abnormal_jobs = _safe(check_abnormal_jobs, [])
+    report.empty_plists = _safe(check_empty_plists, [])
+    report.helper_daemon_mismatch = _safe(check_helper_daemon_pairing, [])
+    report.disabled_orphans = _safe(check_disabled_orphans, [])
+    report.orphan_folders = _safe(check_orphan_folders, [])
+    report.dev_caches = _safe(check_dev_cache_sizes, [])
     return report
 
 

@@ -36,7 +36,7 @@ It reports:
 - orphan keys in the launchd `disabled.*.plist` override records.
 - per-app residual folders under `~/Library` whose app is uninstalled (the
   helper's `safe` orphan scans reclaim these).
-- developer tool cache sizes (report only).
+- developer caches discovered structurally, with multi-version analysis flagging stale (all-but-latest) versions as reclamation candidates (report only).
 
 The launchd / plist findings need manual confirmation. The safe sequence for a
 stale job is: `launchctl bootout` (user) or `sudo launchctl bootout system`
