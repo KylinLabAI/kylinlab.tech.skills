@@ -17,7 +17,7 @@ instructions) and a matching `docs/<skill>.md` manual (human-facing).
 
 | Skill | Manual | Purpose |
 |---|---|---|
-| [`disk-cleanup`](skills/disk-cleanup/SKILL.md) | [manual](docs/disk-cleanup.md) | Safely recover disk space by cleaning temp files, caches, logs, trash, and package-manager caches on macOS/Windows/Linux |
+| [`disk-cleanup`](skills/disk-cleanup/SKILL.md) | [manual](docs/disk-cleanup.md) | Safely recover disk space by cleaning temp files, caches, logs, trash, and package-manager caches on macOS/Windows/Linux; includes a read-only macOS residual audit (`macos_audit.py`) for stale launchd jobs and orphan app leftovers |
 | [`laptop-setup`](skills/laptop-setup/SKILL.md) | [manual](docs/laptop-setup.md) | Provision, audit, or verify a developer laptop from a YAML app registry (brew/winget/apt/dnf), with profiles and dry-runs |
 | [`skill-manager`](skills/skill-manager/SKILL.md) | [manual](docs/skill-manager.md) | Link and unlink local skill directories across agent runtimes using symlinks |
 | [`workspace-setup`](skills/workspace-setup/SKILL.md) | [manual](docs/workspace-setup.md) | Capture a workspace folder tree (git repos + structure) to a portable config, then recreate it by cloning |

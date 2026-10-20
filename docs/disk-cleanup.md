@@ -11,10 +11,11 @@ This skill finds reclaimable disk space on macOS, Windows, or Linux and uses dry
 ## Workflow / Design
 
 1. Detect the operating system and common cleanup targets.
-2. Run a dry-run scan and estimate reclaimable space.
-3. Present cleanup levels and risks clearly.
-4. Delete only approved targets.
-5. Report reclaimed space and remaining large areas to review.
+2. On macOS, run a read-only residual audit (`scripts/macos_audit.py`) to surface stale launchd jobs, empty-shell plists, helper/daemon mismatches, and orphan app-residual folders before any deletion. It never deletes anything.
+3. Run a dry-run scan and estimate reclaimable space.
+4. Present cleanup levels and risks clearly.
+5. Delete only approved targets.
+6. Report reclaimed space and remaining large areas to review.
 
 ## When To Use It
 

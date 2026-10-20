@@ -14,6 +14,60 @@ How to clean up useless files and folders on macOS safely. Prefer built-in OS to
 - Empty Trash only with explicit user approval — files may still be expected for recovery.
 - Safe mode is an Apple-supported way to clear some system caches for short-term free space. Use only when needed.
 
+## Audit Before Cleanup (macOS, read-only)
+
+Before removing anything, run the read-only auditor. It never deletes files; it
+surfaces leftovers the helper cannot safely bulk-remove by itself and lists the
+orphan residual folders the helper *will* reclaim. Treat every `?` line as a
+review item.
+
+```bash
+python3 ./scripts/macos_audit.py
+python3 ./scripts/macos_audit.py --json   # machine-readable summary
+```
+
+It reports:
+
+- LaunchAgent / LaunchDaemon plists whose target binary no longer exists.
+- `launchctl` jobs exiting with an abnormal status (the "spawn scheduled" thrash
+  pattern from a vanished target).
+- empty-shell plists (no `Label`, `{}`) that launchd can't load.
+- `PrivilegedHelperTools` ↔ `LaunchDaemons` pairing mismatches.
+- orphan keys in the launchd `disabled.*.plist` override records.
+- per-app residual folders under `~/Library` whose app is uninstalled (the
+  helper's `safe` orphan scans reclaim these).
+- developer tool cache sizes (report only).
+
+The launchd / plist findings need manual confirmation. The safe sequence for a
+stale job is: `launchctl bootout` (user) or `sudo launchctl bootout system`
+(system) **before** deleting the plist, then optionally `launchctl disable` to
+leave a persistent block, and finally remove the file. See Apple's `launchctl`
+verbs (`list`, `print`, `bootout`, `bootstrap`, `kickstart`, `enable`/`disable`).
+
+## Stale launchd / System Entries (Report Only)
+
+The audit surfaces these; the helper does **not** delete them. Resolve them
+manually after confirming the app is gone:
+
+- `~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`,
+  `~/Library/LaunchDaemons` — stale jobs (dead target, empty shell, abnormal
+  exit). `launchctl list | grep -v com.apple` shows non-0 statuses;
+  `launchctl print gui/$(id -u)/<label>` shows the retry reason.
+- `/Library/PrivilegedHelperTools` + `/Library/LaunchDaemons` — must be removed
+  as a pair (helper and its daemon plist).
+- `/var/db/com.apple.xpc.launchd/disabled.plist` and `disabled.<UID>.plist` — a
+  key here with no matching plist is an orphan override; clear it after deleting
+  the job so later audits stop flagging it.
+- `systemextensionsctl list` — system extensions of uninstalled apps; remove
+  with `systemextensionsctl uninstall <team-id> <bundle-id>` (needs root), never
+  by `rm`.
+- `kextstat | grep -v com.apple` and `/Library/Extensions` — third-party kext;
+  `sudo kextunload -b <id>` then `sudo rm -rf` then `sudo kmutil install`.
+- `/Library/Receipts`, `pkgutil --pkgs`, `/var/db/receipts` — pkg install
+  records; forget with `sudo pkgutil --forget <pkg-id>`.
+- `sudo sfltool dumpbtm` / `~/Library/Application Support/com.apple.backgroundtaskmanagementagent/backgrounditems.btm` — Login Items & Extensions; remove stale entries in System Settings → General → Login Items & Extensions. Note that hand-placed `LaunchAgents` plists are *not* registered in the BTM database, so they never appear in System Settings.
+- `sqlite3 ~/Library/Application Support/com.apple.TCC/TCC.db "SELECT service, client FROM access WHERE auth_value=2;"` — privacy grants of uninstalled apps; clear them in System Settings → Privacy & Security.
+
 ## Safe To Clean (Regenerable)
 
 These are scanned by the bundled helper under the `safe` profile. The helper is
@@ -30,6 +84,16 @@ These are scanned by the bundled helper under the `safe` profile. The helper is
   - **Whole containers of uninstalled apps** are removed (per Apple guidance,
     leftover data from uninstalled apps is safe to delete).
   - Containers of still-installed apps are left untouched — they may hold user data.
+- `~/Library/HTTPStorages` — per-app HTTP cookie/cache stores. Whole folders of
+  uninstalled apps are removed; still-installed apps are left untouched.
+- `~/Library/WebKit` — per-app WebKit data. Whole folders of uninstalled apps
+  are removed; still-installed apps are left untouched.
+- `~/Library/Saved Application State` — per-app window-restore state
+  (`<bundle-id>.savedState`). Whole folders of uninstalled apps are removed;
+  still-installed apps keep their restore state.
+- `~/Library/Group Containers` — App Group shared data (`group.<bundle-id>`).
+  Whole folders of uninstalled apps are removed; still-installed apps are left
+  untouched.
 - `~/Library/Logs` — per-user logs. Only entries **older than 7 days** are
   removed; recent logs are always kept (the helper never does `rm -rf ~/Library/Logs/*`).
 - `~/Library/Application Support/CrashReporter` — crash reports (age-limited).
@@ -134,6 +198,50 @@ Scanned under the `developer` profile (`--include-developer`). Expect first buil
 Community experience (mac-cleanup, cleanup, clean_my_mac projects) consistently finds Xcode artifacts to be the single largest reclaimable category for developers — commonly 10–90 GB.
 
 Do not delete `~/Library/Developer/CoreSimulator/Devices` wholesale; simulator devices can hold user app data. Prefer `xcrun simctl delete unavailable` to remove only devices tied to unavailable runtimes.
+
+### Multi-version caches (the common pattern)
+
+Many developer caches are **versioned**: the same parent holds several
+side-by-side version directories, and only the newest is actively used. The
+generic pattern shows up everywhere:
+
+| Tool | Versioned layout |
+|---|---|
+| Gradle | `~/.gradle/caches/<gradle-version>/`, `~/.gradle/<gradle-version>/` |
+| Maven | `~/.m2/repository/<group>/<artifact>/<version>/` (per-artifact versions) |
+| Go | `~/go/pkg/mod/cache/download/<module>/@v/` (per-module versions) |
+| Cargo | `~/.cargo/registry/src/<hash>/<crate>-<version>/`, `~/.cargo/registry/cache/` |
+| Rustup | `~/.rustup/toolchains/<version>-<triple>/`, `~/.rustup/toolchains/<version>-<triple>/lib/rustlib/<target>/` |
+| Homebrew | `$(brew --cache)/<formula>/<version>/` |
+| npm/pnpm/Yarn | `*/node_modules/<pkg>/<version>/` or content-addressed stores |
+| Xcode | `~/Library/Developer/Xcode/iOS DeviceSupport/<version>/`, `~/Library/Developer/Xcode/Archives/<date>/` |
+
+**How to assess "useless" versions** (don't just delete the newest, don't trust
+a frozen list of tool paths):
+
+1. **Keep the latest per group.** For a directory with siblings `<base>-1.2`,
+   `<base>-1.3`, the older one is reclaimable. The audit flags exactly these
+   all-but-latest versions per group and estimates their size.
+2. **Cross-check against lockfiles / manifests before trusting age alone.**
+   E.g. for Cargo, compare `~/.cargo/registry/src` against every `Cargo.lock`
+   in your repos: versions referenced by no project are orphans. The guide's
+   measured case reclaimed ~1 GB of orphan crate versions this way. (The
+   official `cargo cache --autoclean-untracked` does this for you.)
+3. **When in doubt, wipe-and-rebuild is safe for the cache store itself** —
+   deleting `~/.cargo/registry/{cache,src}/*`, `~/.gradle/caches/*`,
+   `~/go/pkg/mod/cache/*` just forces a re-download on next build. Never wipe
+   `~/.cargo/bin` (your installed tools) or `~/.rustup/toolchains` you still
+   build against without confirming the toolchain/targets your projects need.
+4. **Toolchain/target directories are different from caches.** `~/.rustup`
+   (typically several GB) holds the compiler toolchains and cross-compilation
+   targets — keep the toolchain your `rust-toolchain.toml` / repos require and
+   only drop exact-duplicate copies (e.g. a `1.97.1` copy identical to
+   `stable`).
+
+The read-only auditor applies this pattern **generically** (it discovers cache
+directories structurally and groups versioned siblings — it does *not* rely on
+a hardcoded tool list), so unknown tools are caught too. See
+`scripts/macos_audit.py` and its "Large caches" section.
 
 ## Package Caches
 

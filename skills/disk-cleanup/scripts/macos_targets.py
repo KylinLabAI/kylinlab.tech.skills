@@ -39,6 +39,45 @@ TARGETS: tuple[CleanupTarget, ...] = (
         mode="orphan-folders",
     ),
     CleanupTarget(
+        "macos-httpstorages-orphans",
+        "macos",
+        "safe",
+        ("~/Library/HTTPStorages",),
+        "HTTP cookie/cache stores per app. Whole folders belonging to "
+        "uninstalled apps are removed; folders of still-installed apps are left "
+        "untouched.",
+        mode="orphan-folders",
+    ),
+    CleanupTarget(
+        "macos-webkit-orphans",
+        "macos",
+        "safe",
+        ("~/Library/WebKit",),
+        "Per-app WebKit data. Whole folders belonging to uninstalled apps are "
+        "removed; folders of still-installed apps are left untouched.",
+        mode="orphan-folders",
+    ),
+    CleanupTarget(
+        "macos-saved-state-orphans",
+        "macos",
+        "safe",
+        ("~/Library/Saved Application State",),
+        "Per-app window-restore state (named <bundle-id>.savedState). Whole "
+        "folders belonging to uninstalled apps are removed; still-installed "
+        "apps keep their restore state.",
+        mode="orphan-folders",
+    ),
+    CleanupTarget(
+        "macos-group-containers-orphans",
+        "macos",
+        "safe",
+        ("~/Library/Group Containers",),
+        "App Group shared data (named group.<bundle-id>). Whole folders "
+        "belonging to uninstalled apps are removed; still-installed apps are "
+        "left untouched.",
+        mode="orphan-folders",
+    ),
+    CleanupTarget(
         "macos-user-logs",
         "macos",
         "safe",

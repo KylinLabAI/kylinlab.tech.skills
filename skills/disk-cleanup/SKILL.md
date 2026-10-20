@@ -30,7 +30,29 @@ python3 ./scripts/storage_cleanup.py --list-targets
    - [Windows](./references/windows-cleanup.md)
    - [Linux](./references/linux-cleanup.md)
 
-3. Run the bundled helper in dry-run mode. It scans only known temporary/cache/log locations for files older than the age threshold.
+3. On macOS, run the read-only residual audit **before** any cleanup. It finds
+   launchd dead references, abnormal jobs, empty-shell plists, helper/daemon
+   pairing mismatches, orphan launchd override keys, per-app residual folders
+   whose app is no longer installed, and **developer caches discovered
+   structurally with multi-version analysis** (it flags stale versions per
+   group — all-but-latest — as reclamation candidates). The audit never deletes
+   anything and learns the per-tool details from
+   [references/macos-cleanup.md](./references/macos-cleanup.md), not a hardcoded
+   tool list.
+
+   ```bash
+   python3 ./scripts/macos_audit.py
+   python3 ./scripts/macos_audit.py --json   # machine-readable summary
+   ```
+
+   Treat the `?` findings as *review* items: the orphan residual folders can be
+   reclaimed by the helper's `safe` orphan scans; the launchd/plist findings
+   need manual confirmation (see the macOS reference for the exact
+   `launchctl bootout` / `disable` / `rm` sequence); the developer-cache
+   findings are sized and version-grouped so you can keep the latest version per
+   tool and drop the rest.
+
+4. Run the bundled helper in dry-run mode. It scans only known temporary/cache/log locations for files older than the age threshold.
 
 ```bash
 python3 ./scripts/storage_cleanup.py --min-age-days 7
@@ -38,14 +60,14 @@ python3 ./scripts/storage_cleanup.py --min-age-days 7
 
 On Windows, use `py -3` or `python` instead of `python3` if that is how Python is installed.
 
-4. Review the report with the user. Explain what will be removed, what will regenerate, and what will only be suggested.
-5. Delete only after explicit user approval. Use the smallest set of options that matches the approved cleanup.
+5. Review the report with the user. Explain what will be removed, what will regenerate, and what will only be suggested.
+6. Delete only after explicit user approval. Use the smallest set of options that matches the approved cleanup.
 
 ```bash
 python3 ./scripts/storage_cleanup.py --min-age-days 7 --apply
 ```
 
-6. Recheck free space and report:
+7. Recheck free space and report:
    - space before and after;
    - targets cleaned;
    - skipped paths or permission errors;
@@ -67,6 +89,12 @@ Cache cleanup is **app-aware and safe by construction** — it never does a blan
   junk — this is usually the biggest silent reclaim from long-ago uninstalled apps.
 - **Caches of still-installed apps** keep only files older than the age threshold
   (default 7 days); recent cache is left so the app doesn't misbehave.
+- **Other orphan app-residual folders** are removed in full when the owning app
+  is uninstalled and the folder name looks like a bundle id: `~/Library/Caches`,
+  `~/Library/Containers`, `~/Library/HTTPStorages`, `~/Library/WebKit`,
+  `~/Library/Saved Application State` (`<bundle-id>.savedState`), and
+  `~/Library/Group Containers`. Folders of still-installed apps are never
+  touched.
 - **Logs** keep only entries older than 7 days (`--min-age-days 7` default); the
   helper never deletes recent logs or does `rm -rf ~/Library/Logs/*`.
 - Folders whose name can't be matched to an installed app are skipped, not deleted.

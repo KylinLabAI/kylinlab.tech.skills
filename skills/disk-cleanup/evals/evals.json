@@ -48,6 +48,18 @@
         "For still-installed apps, removes only age-thresholded files, not the whole cache.",
         "Limits log deletion to entries older than 7 days and keeps recent logs."
       ]
+    },
+    {
+      "id": 5,
+      "prompt": "On my Mac, leftover launchd jobs and old app junk keep coming back. Can you audit what's stale before I clean anything?",
+      "expected_output": "The agent runs the read-only macOS auditor (python3 scripts/macos_audit.py), reports dead LaunchAgent/LaunchDaemon targets, abnormal launchd jobs, empty-shell plists, helper/daemon mismatches, orphan launchd override keys, and orphan app-residual folders, makes clear it deleted nothing, and points to the manual launchctl bootout/disable sequence for the launchd items while noting the helper can reclaim the orphan folders.",
+      "files": [],
+      "expectations": [
+        "Runs the read-only macos_audit.py and deletes nothing itself.",
+        "Surfaces launchd/plist stale records as manual-review items with the safe removal sequence.",
+        "Reports orphan app-residual folders that the helper's safe orphan scans will reclaim.",
+        "Does not manually delete system folders, kexts, or Privacy/TCC entries."
+      ]
     }
   ]
 }
