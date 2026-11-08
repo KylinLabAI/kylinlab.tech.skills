@@ -270,7 +270,7 @@ def main():
 
 {summary_block}> **单位说明：** 各平台原生费用单位不同（Qoder/DeepSeek 为人民币；TRAE/CodeBuddy 为积分），
 > 本表「折算费用(RMB)」按 `configs/units.json` 的折算率把积分换算成人民币以便跨平台比较：
-> TRAE {rate_trae}/积分（89RMB/4000积分），CodeBuddy {rate_cb}/积分（99RMB/4000积分）。
+> TRAE {rate_trae}/积分（{round(rate_trae * 4000)}RMB/4000积分），CodeBuddy {rate_cb}/积分（{round(rate_cb * 4000)}RMB/4000积分）。
 > 末行「全平台折算合计」即为可比的人民币总费用。
 > 数据来自本地已抓取缓存，未做外发。
 

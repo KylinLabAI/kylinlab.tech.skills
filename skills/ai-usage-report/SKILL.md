@@ -270,8 +270,9 @@ cookies — so there is **no manual "export / download" click** and, once the
 session is cached, **no manual login** either. This is the preferred path over
 the file-export workflow for those platforms.
 
-- **Qoder**: works out of the box (endpoint is baked into
-  `configs/api_templates.json`). The scraper calls
+- **Qoder**: works out of the box. The request is built in
+  `scrape_usage.py::_fetch_qoder_api_pages` (URL mirrored in
+  `configs/api_templates.json`); it calls
   `usages/big_model_credits/histories` with `start_time`/`end_time` (epoch ms,
   Beijing time) and paginates.
 - **CodeBuddy**: works out of the box — the endpoint is baked into
@@ -358,7 +359,7 @@ python3 cross_platform_report.py --start 2026-07-13 --end 2026-08-11 --out 2026-
 ## Notes / assumptions
 
 - **Cost units differ per platform, but are convertible to RMB** via
-  `configs/units.json` (per-platform `rmb_per_unit`): TRAE = 89 RMB / 4000 积分,
+  `configs/units.json` (per-platform `rmb_per_unit`): TRAE = 93 RMB / 4000 积分,
   CodeBuddy = 99 RMB / 4000 积分; Qoder/DeepSeek are already RMB. The cross-platform
   summary shows a **折算费用(RMB)** column + **全平台折算合计** row for a comparable total;
   each per-platform report also shows its own 折算费用(RMB). Edit `units.json` to change rates.

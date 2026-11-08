@@ -1,6 +1,6 @@
 {
   "qoder": {
-    "note": "Known working direct API. scrape_usage.py --platform qoder already calls this via page.evaluate(fetch) with cookie auth.",
+    "note": "Known working direct API. scrape_usage.py calls it via page.evaluate(fetch) with cookie auth; the request is built in _fetch_qoder_api_pages, so keep this URL in sync with that function.",
     "url": "https://qoder.com.cn/api/v1/me/usages/big_model_credits/histories?page={page}&page_size=100&start_time={start}&end_time={end}&order_by=begin_at&order=-1",
     "method": "GET",
     "date_format": "ms",

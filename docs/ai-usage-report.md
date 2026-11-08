@@ -13,7 +13,7 @@ numbers.
 1. **Cost units differ, but are convertible to RMB**: each platform's `cost`
    column uses a different native unit — Qoder / DeepSeek are in CNY/RMB, while
    TRAE / CodeBuddy are in points. `configs/units.json` defines a `rmb_per_unit`
-   rate per platform (TRAE 89 RMB / 4000 积分, CodeBuddy 99 RMB / 4000 积分),
+   rate per platform (TRAE 93 RMB / 4000 积分, CodeBuddy 99 RMB / 4000 积分),
    so the cross-platform summary shows a **折算费用(RMB)** column and a
    **全平台折算合计** row. The conversion rate is user-editable in that file.
 2. **Fetching everything ≠ fetching correctly**: if browser pagination/
