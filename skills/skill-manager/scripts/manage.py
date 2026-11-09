@@ -26,6 +26,7 @@ AGENT_DIRS: tuple[str, ...] = (
     os.path.expanduser("~/.trae-cn/skills"),
     os.path.expanduser("~/.claude/skills"),
     os.path.expanduser("~/.codebuddy/skills"),
+    os.path.expanduser("~/.workbuddy/skills"),
     os.path.expanduser("~/.qoder/skills"),
     os.path.expanduser("~/.qoder-cn/skills"),
     os.path.expanduser("~/.lingma/skills"),

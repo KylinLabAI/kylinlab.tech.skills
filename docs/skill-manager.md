@@ -61,6 +61,7 @@ The skill manager creates symlinks in these agent directories:
 - `~/.trae-cn/skills/`
 - `~/.claude/skills/`
 - `~/.codebuddy/skills/`
+- `~/.workbuddy/skills/`
 - `~/.qoder/skills/`
 - `~/.qoder-cn/skills/`
 - `~/.lingma/skills/`
