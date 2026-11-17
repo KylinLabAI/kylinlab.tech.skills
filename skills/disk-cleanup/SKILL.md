@@ -1,6 +1,11 @@
 ---
-name: disk-cleanup
+name: safe-storage-cleanup
+version: 1.0.0
+display_name: 安全存储清理
+display_name_en: Safe Storage Cleanup
 description: Recover local disk space by safely finding and cleaning temporary files, caches, logs, trash, developer build artifacts, and package-manager caches on macOS, Windows, or Linux. Use this skill whenever the user says disk, storage, startup disk, C drive, temp files, cache, logs, cleanup, clean useless files, system says storage is almost full, or asks what can be deleted safely to save local storage.
+description_zh: 通过安全地查找和清理 macOS、Windows 或 Linux 上的临时文件、缓存、日志、废纸篓、开发者构建产物以及包管理器缓存，释放本地磁盘空间。当用户提到磁盘、存储、启动磁盘、C 盘、临时文件、缓存、日志、清理、清除无用文件、系统提示存储空间不足，或询问哪些内容可以安全删除以节省本地存储时，使用该技能。
+description_en: Recover local disk space by safely finding and cleaning temporary files, caches, logs, trash, developer build artifacts, and package-manager caches on macOS, Windows, or Linux. Use this skill whenever the user says disk, storage, startup disk, C drive, temp files, cache, logs, cleanup, clean useless files, system says storage is almost full, or asks what can be deleted safely to save local storage.
 compatibility: Requires only shell access and Python 3 for the bundled helper. Supports macOS, Windows, and Linux workflows with dry-run first and explicit apply before deletion.
 ---
 
