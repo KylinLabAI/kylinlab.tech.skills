@@ -1,6 +1,11 @@
 ---
 name: ai-agent-auto-approve
+version: 1.0.0
+display_name: AI 智能体自动授权
+display_name_en: AI Agent Auto Approve
 description: Configure AI coding agents for fully autonomous operation — auto-approve all permissions so the agent runs without user interaction. Supports GitHub Copilot (VS Code), Claude Code (CLI), OpenAI Codex (CLI), Cursor, Aider (CLI), Cline (VS Code), Roo Code (VS Code), and Windsurf (Cascade). Auto-detects which agent is active, or the user can specify. Use when the user says "auto approve", "autonomous agent", "no prompts", "agent auto approve", "skip approval", "run without confirmation", "copilot auto approve", "claude code autonomous", "codex full auto", "cursor auto approve", "aider yes always", "cline yolo mode", "roo code auto approve", "windsurf auto approve", or wants the AI agent to run without user interaction.
+description_zh: 配置 AI 编程智能体以实现完全自主运行 —— 自动批准所有权限，让智能体无需用户交互即可运行。支持 GitHub Copilot（VS Code）、Claude Code（CLI）、OpenAI Codex（CLI）、Cursor、Aider（CLI）、Cline（VS Code）、Roo Code（VS Code）和 Windsurf（Cascade）。可自动检测当前使用的智能体，用户也可手动指定。当用户说"自动批准""自主智能体""无提示""智能体自动批准""跳过审批""无需确认运行""copilot 自动批准""claude code 自主""codex 全自动""cursor 自动批准""aider 始终同意""cline yolo 模式""roo code 自动批准""windsurf 自动批准"，或希望 AI 智能体无需用户交互即可运行时，使用该技能。
+description_en: Configure AI coding agents for fully autonomous operation — auto-approve all permissions so the agent runs without user interaction. Supports GitHub Copilot (VS Code), Claude Code (CLI), OpenAI Codex (CLI), Cursor, Aider (CLI), Cline (VS Code), Roo Code (VS Code), and Windsurf (Cascade). Auto-detects which agent is active, or the user can specify. Use when the user says "auto approve", "autonomous agent", "no prompts", "agent auto approve", "skip approval", "run without confirmation", "copilot auto approve", "claude code autonomous", "codex full auto", "cursor auto approve", "aider yes always", "cline yolo mode", "roo code auto approve", "windsurf auto approve", or wants the AI agent to run without user interaction.
 ---
 
 # AI Agent Auto-Approve Setup

@@ -1,6 +1,11 @@
 ---
 name: ai-usage-report
+version: 1.0.0
+display_name: AI 用量报告
+display_name_en: AI Usage Report
 description: Analyze AI platform usage export files (CodeBuddy xlsx, DeepSeek zip csv, Qoder, TRAE, generic csv/json/xlsx) and generate a statistical Markdown report with daily/cost/model/task charts. Use when the user wants to summarize, visualize, or report on exported AI assistant usage data.
+description_zh: 分析 AI 平台用量导出文件（CodeBuddy xlsx、DeepSeek zip csv、Qoder、TRAE、通用 csv/json/xlsx），并生成包含每日／成本／模型／任务图表的统计 Markdown 报告。当用户想要汇总、可视化或报告导出的 AI 助手用量数据时，使用该技能。
+description_en: Analyze AI platform usage export files (CodeBuddy xlsx, DeepSeek zip csv, Qoder, TRAE, generic csv/json/xlsx) and generate a statistical Markdown report with daily/cost/model/task charts. Use when the user wants to summarize, visualize, or report on exported AI assistant usage data.
 ---
 
 # AI Usage Report

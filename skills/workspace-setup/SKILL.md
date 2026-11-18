@@ -1,6 +1,11 @@
 ---
 name: workspace-setup
+version: 1.0.0
+display_name: 工作区结构配置
+display_name_en: Workspace Setup
 description: Capture a workspace folder tree (git repos + their folder structure + repo-targeting symlinks) into a portable JSON config, then recreate that exact tree elsewhere by cloning. Use when the user says "scan my workspace folders", "save folder structure", "rebuild folder tree from config", "capture repo layout", "restore workspace structure", or wants to mirror a multi-repo folder hierarchy without the actual repo contents. Also trigger for backing up or recreating a folder tree that contains git repositories.
+description_zh: 将工作区文件夹树（git 仓库、各仓库的文件夹结构以及指向仓库的符号链接）捕获为可移植的 JSON 配置，然后通过克隆在其他位置重建完全相同的目录树。当用户说"扫描我的工作区文件夹""保存文件夹结构""根据配置重建文件夹树""捕获仓库布局""恢复工作区结构"，或希望在不包含实际仓库内容的情况下镜像多仓库文件夹层级时，使用该技能。也适用于备份或重建包含 git 仓库的文件夹树。
+description_en: Capture a workspace folder tree (git repos + their folder structure + repo-targeting symlinks) into a portable JSON config, then recreate that exact tree elsewhere by cloning. Use when the user says "scan my workspace folders", "save folder structure", "rebuild folder tree from config", "capture repo layout", "restore workspace structure", or wants to mirror a multi-repo folder hierarchy without the actual repo contents. Also trigger for backing up or recreating a folder tree that contains git repositories.
 ---
 
 # Workspace Setup
