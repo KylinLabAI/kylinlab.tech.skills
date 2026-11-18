@@ -1,6 +1,26 @@
 ---
 name: laptop-setup
+version: 1.0.0
+display_name: 笔记本环境配置
+display_name_en: Laptop Setup
 description: >
+  Provision, audit, or verify a developer laptop from a YAML app registry.
+  Use this skill whenever the user mentions setting up a new laptop, fresh
+  machine, dev machine, daily tools, installing many apps, checking whether
+  tools are installed, re-running post-install setup, or verifying iOS
+  Simulators / Android emulators. The
+  bundled script detects macOS, Windows, and Linux, checks architecture and
+  package managers, supports profile-based selection, dry-runs, skips
+  already-installed apps, and runs optional post-install and verification
+  commands from configs/apps.yaml.
+description_zh: >
+  根据 YAML 应用清单配置、审计或验证开发者的笔记本电脑环境。当用户提到
+  配置新电脑、全新机器、开发机、日常工具、批量安装应用、检查工具是否已安装、
+  重新执行安装后配置，或验证 iOS 模拟器 / Android 模拟器时，使用该技能。
+  内置脚本可检测 macOS、Windows 和 Linux，检查架构与包管理器，支持基于
+  配置文件的选择、预演（dry-run）、跳过已安装的应用，并从 configs/apps.yaml
+  执行可选的安装后配置与验证命令。
+description_en: >
   Provision, audit, or verify a developer laptop from a YAML app registry.
   Use this skill whenever the user mentions setting up a new laptop, fresh
   machine, dev machine, daily tools, installing many apps, checking whether

@@ -1,6 +1,11 @@
 ---
-name: skill-manager
+name: skill-symlink-manager
+version: 1.0.0
+display_name: 技能符号链接管理器
+display_name_en: Skill Symlink Manager
 description: Link local skill directories into agent runtimes using symlinks, and remove or update those links. Use this skill when users want to link a local skill directory, unlink an installed skill, or refresh which skills are visible to their agents. External skills from other repos are NOT handled here — they are installed separately with `npx skills`.
+description_zh: 使用符号链接将本地技能目录链接到各类智能体运行时，并可移除或更新这些链接。当用户想要将本地技能目录链接到其智能体、取消已安装技能的链接，或刷新其智能体可见的技能时，使用该技能。来自其他仓库的外部技能不在此处理 —— 它们通过 `npx skills` 单独安装。
+description_en: Link local skill directories into agent runtimes using symlinks, and remove or update those links. Use this skill when users want to link a local skill directory, unlink an installed skill, or refresh which skills are visible to their agents. External skills from other repos are NOT handled here — they are installed separately with `npx skills`.
 ---
 
 # Skill Manager
