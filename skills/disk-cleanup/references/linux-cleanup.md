@@ -68,6 +68,19 @@ Scanned under the `trash` profile (`--include-trash`). Requires explicit approva
 
 - `~/.local/share/Trash` (freedesktop.org Trash spec; supported by GNOME, KDE, and most file managers).
 
+## Log Folders (Opt-in)
+
+Scanned under the `logs` profile (`--include-logs`). Keeps only the latest
+`--log-min-age-days` (default 3) of entries in any per-app `log`/`logs` folder
+under `~/.cache`, `~/.local/share`, and `~/.config` (the helper matches all
+casings via the `[Ll]og` / `[Ll]ogs` patterns). Only the `log`/`logs` *subfolder*
+is scanned — `~/.config` itself is still treated as user settings and never
+touched.
+
+- Safe to delete: logs regenerate and never hold login state or user data.
+- Older-than-threshold entries are removed; the most recent 3 days are kept.
+- Opt-in because the scan is broad; review the dry-run before applying.
+
 ## Systemd Journal Logs
 
 Safe to vacuum old journal entries (vendor-supported):

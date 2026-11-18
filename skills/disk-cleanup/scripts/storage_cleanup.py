@@ -53,6 +53,8 @@ def active_profiles(args: argparse.Namespace) -> set[str]:
         profiles.add("trash")
     if args.include_app_data:
         profiles.add("app-data")
+    if args.include_logs:
+        profiles.add("logs")
     return profiles
 
 
@@ -60,6 +62,7 @@ def run(args: argparse.Namespace) -> CleanupReport:
     target_platform = detect_platform(args.platform)
     profiles = active_profiles(args)
     cutoff = time.time() - (args.min_age_days * 24 * 60 * 60)
+    log_cutoff = time.time() - (args.log_min_age_days * 24 * 60 * 60)
     targets = load_targets(target_platform)
     reports: list = []
     seen_roots: set[tuple[str, str]] = set()
@@ -67,6 +70,9 @@ def run(args: argparse.Namespace) -> CleanupReport:
     for target in targets:
         if target.platform != target_platform or target.profile not in profiles:
             continue
+        # The `logs` profile keeps only the latest --log-min-age-days of entries;
+        # every other profile uses the global --min-age-days threshold.
+        effective_cutoff = log_cutoff if target.profile == "logs" else cutoff
         for pattern in target.patterns:
             for root in resolve_pattern(pattern, target_platform):
                 key = (target.key, str(root))
@@ -74,16 +80,16 @@ def run(args: argparse.Namespace) -> CleanupReport:
                     continue
                 seen_roots.add(key)
                 if target.mode == "old-children":
-                    reports.append(scan_old_children(root, target, cutoff, args.apply))
+                    reports.append(scan_old_children(root, target, effective_cutoff, args.apply))
                 elif target.mode in ("orphan-caches", "orphan-folders"):
                     clean_by_age = target.mode == "orphan-caches"
-                    reports.append(scan_orphan(root, target, cutoff, args.apply, clean_by_age))
+                    reports.append(scan_orphan(root, target, effective_cutoff, args.apply, clean_by_age))
                 elif target.mode == "nested-dirs":
                     reports.append(scan_nested_dirs(root, target, args.apply))
                 elif target.mode == "appsupport-logs-cache":
-                    reports.append(scan_appsupport(root, target, cutoff, args.apply))
+                    reports.append(scan_appsupport(root, target, effective_cutoff, args.apply))
                 else:
-                    reports.append(scan_old_files(root, target, cutoff, args.apply))
+                    reports.append(scan_old_files(root, target, effective_cutoff, args.apply))
 
     return CleanupReport(
         platform=target_platform,
@@ -157,6 +163,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Also age-expire app user data (e.g. CodeBuddy extension history). "
         "Risky: may drop conversation history. Use only when the user confirms.",
     )
+    parser.add_argument("--include-logs", action="store_true",
+                        help="Scan *log(s) folders and keep only the latest --log-min-age-days of logs.")
+    parser.add_argument("--log-min-age-days", type=float, default=3.0,
+                        help="Age threshold (days) for the logs profile; defaults to 3.")
     parser.add_argument("--apply", action="store_true", help="Delete matched files/items.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of text.")
     parser.add_argument("--list-targets", action="store_true", help="List active cleanup targets and exit.")

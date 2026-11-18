@@ -212,6 +212,28 @@ python3 ./scripts/storage_cleanup.py --include-trash --min-age-days 30 --apply
 
 For OS-specific trash/recycle handling (Storage Sense on Windows, Trash on macOS/Linux), see the per-platform reference docs.
 
+### Log Folders
+
+Opt-in (`--include-logs`). Scans any per-app folder named `log` or `logs` (all
+casings — `log`, `Log`, `logs`, `Logs`) under common user-data roots — e.g.
+`%LOCALAPPDATA%\*\logs`, `~/Library/Application Support/*/logs`,
+`~/.cache/*/logs` — and keeps only the latest `--log-min-age-days` (default
+**3**) of entries; anything older is removed. This is safe: logs regenerate, and
+deleting old logs never logs you out or removes user data. Use it to cap log
+growth from chatty apps (IDE extensions, dev servers, agents) without touching
+caches, temp, or anything else.
+
+```bash
+python3 ./scripts/storage_cleanup.py --include-logs
+python3 ./scripts/storage_cleanup.py --include-logs --log-min-age-days 3 --apply
+```
+
+The `logs` profile has its own shorter default (3 days) so recent debug history
+is preserved while stale logs are trimmed. The global `--min-age-days` (default
+7) still governs the temp/cache/log targets in the `safe` profile.
+
+For OS-specific trash/recycle handling (Storage Sense on Windows, Trash on macOS/Linux), see the per-platform reference docs.
+
 ## Safety Rules
 
 - Always run dry-run first unless the user already gave a precise delete command.

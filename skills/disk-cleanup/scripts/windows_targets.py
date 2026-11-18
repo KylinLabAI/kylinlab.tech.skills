@@ -51,6 +51,19 @@ TARGETS: tuple[CleanupTarget, ...] = (
         "Visual Studio caches that regenerate.",
     ),
     CleanupTarget(
+        "windows-jinjinxia-webview2",
+        "windows",
+        "developer",
+        (
+            "%LOCALAPPDATA%\\com.kylinlab.jinjinxia.client\\EBWebView",
+        ),
+        "JinJinXia desktop client's WebView2 profile (Edge WebView2 browser data "
+        "for the Tauri app com.kylinlab.jinjinxia.client). The folder regenerates "
+        "automatically on next launch, but it holds the webUI's login state and "
+        "local storage: clearing it logs you out of the dashboard. Only clean when "
+        "the app and its jinjinxia serve child process are fully closed.",
+    ),
+    CleanupTarget(
         "windows-package-caches",
         "windows",
         "package-caches",
@@ -64,5 +77,20 @@ TARGETS: tuple[CleanupTarget, ...] = (
             "%USERPROFILE%\\.pnpm-store",
         ),
         "Package manager caches. Prefer manager-specific cleanup commands when available.",
+    ),
+    CleanupTarget(
+        "windows-app-logs",
+        "windows",
+        "logs",
+        (
+            "%LOCALAPPDATA%\\*\\[Ll]og",
+            "%LOCALAPPDATA%\\*\\[Ll]ogs",
+            "%APPDATA%\\*\\[Ll]og",
+            "%APPDATA%\\*\\[Ll]ogs",
+        ),
+        "Per-app log folders under %LOCALAPPDATA% and %APPDATA% (any casing of "
+        "log/logs, e.g. EBWebView-like app data, CodeBuddyExtension\\Logs). Keeps "
+        "only the latest --log-min-age-days (default 3); older entries are removed. "
+        "Logs regenerate and old logs never hold login state or user data.",
     ),
 )

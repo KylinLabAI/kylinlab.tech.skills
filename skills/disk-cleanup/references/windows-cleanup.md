@@ -45,6 +45,10 @@ Scanned under the `developer` profile (`--include-developer`). Expect IDE startu
 - `%LOCALAPPDATA%\Microsoft\VisualStudio\*\ComponentModelCache` — Visual Studio component model cache.
 - `%LOCALAPPDATA%\Microsoft\VisualStudio\*\Designer\ShadowCache` — designer shadow cache.
 
+**App WebView2 profile (JinJinXia):**
+
+- `%LOCALAPPDATA%\com.kylinlab.jinjinxia.client\EBWebView` — the JinJinXia desktop client's Edge WebView2 browser profile. This is the one exception to the "Do Not Delete: Browser profiles" rule below: it is fully regenerable, but it holds the webUI's login state and local storage, so clearing it logs you out of the dashboard. Only clean it when the app and its `jinjinxia serve` child process are fully closed. Use `--min-age-days 0 --apply` for a complete reset, or the default threshold to trim only stale files.
+
 ## Package Caches
 
 Scanned under the `package-caches` profile (`--include-package-caches`). Prefer manager-specific commands first — see [public-cleanup-guidance.md](./public-cleanup-guidance.md) for npm, pip, pnpm, Yarn, and conda commands.
@@ -54,6 +58,19 @@ Helper-scanned locations:
 - `%LOCALAPPDATA%\npm-cache`, `%LOCALAPPDATA%\pip\Cache`
 - `%LOCALAPPDATA%\Yarn\Cache`, `%LOCALAPPDATA%\pnpm\store`
 - `%USERPROFILE%\.npm`, `%USERPROFILE%\.cache\pip`, `%USERPROFILE%\.pnpm-store`
+
+## Log Folders (Opt-in)
+
+Scanned under the `logs` profile (`--include-logs`). Keeps only the latest
+`--log-min-age-days` (default 3) of entries in any per-app `log`/`Logs` folder
+under `%LOCALAPPDATA%` and `%APPDATA%` (the helper matches all casings via the
+`[Ll]og` / `[Ll]ogs` patterns). This catches folders such as
+`%LOCALAPPDATA%\CodeBuddyExtension\Logs` and app `EBWebView`-style log dirs.
+
+- Safe to delete: logs regenerate and never hold login state or user data.
+- Older-than-threshold entries are removed; the most recent 3 days are kept.
+- Opt-in because the scan is broad (one level under each user-data root); review
+  the dry-run before applying.
 
 ## Recycle Bin
 

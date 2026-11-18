@@ -266,6 +266,19 @@ Scanned under the `trash` profile (`--include-trash`). Requires explicit approva
 
 - `~/.Trash`
 
+## Log Folders (Opt-in)
+
+Scanned under the `logs` profile (`--include-logs`). Keeps only the latest
+`--log-min-age-days` (default 3) of entries in any per-app `log`/`Logs` folder
+under `~/Library/Application Support`, `~/.cache`, and `~/.local/share` (the
+helper matches all casings via the `[Ll]og` / `[Ll]ogs` patterns). This is
+broader than the `safe`-profile `~/Library/Logs` scan and targets per-app log
+dirs that live inside each app's support/cache folder.
+
+- Safe to delete: logs regenerate and never hold login state or user data.
+- Older-than-threshold entries are removed; the most recent 3 days are kept.
+- Opt-in because the scan is broad; review the dry-run before applying.
+
 ## Time Machine Local Snapshots
 
 Do not manually delete Time Machine local snapshots by walking system folders. macOS treats them as available space and deletes them as needed. When snapshots are large and the user explicitly approves, use the supported interfaces rather than deleting hidden files:

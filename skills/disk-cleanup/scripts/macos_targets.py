@@ -216,4 +216,20 @@ TARGETS: tuple[CleanupTarget, ...] = (
         mode="nested-dirs",
         remove_dirs_named="assets",
     ),
+    CleanupTarget(
+        "macos-app-logs",
+        "macos",
+        "logs",
+        (
+            "~/Library/Application Support/*/[Ll]og",
+            "~/Library/Application Support/*/[Ll]ogs",
+            "~/.cache/*/[Ll]og",
+            "~/.cache/*/[Ll]ogs",
+            "~/.local/share/*/[Ll]og",
+            "~/.local/share/*/[Ll]ogs",
+        ),
+        "Per-app log folders under common user-data roots (any casing of "
+        "log/logs). Keeps only the latest --log-min-age-days (default 3); older "
+        "entries removed. Logs regenerate and never hold login state or user data.",
+    ),
 )

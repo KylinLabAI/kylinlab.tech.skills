@@ -70,4 +70,20 @@ TARGETS: tuple[CleanupTarget, ...] = (
         "Trash items (freedesktop.org spec). Requires explicit user approval.",
         mode="old-children",
     ),
+    CleanupTarget(
+        "linux-app-logs",
+        "linux",
+        "logs",
+        (
+            "~/.cache/*/[Ll]og",
+            "~/.cache/*/[Ll]ogs",
+            "~/.local/share/*/[Ll]og",
+            "~/.local/share/*/[Ll]ogs",
+            "~/.config/*/[Ll]og",
+            "~/.config/*/[Ll]ogs",
+        ),
+        "Per-app log folders under common freedesktop user roots (any casing of "
+        "log/logs). Keeps only the latest --log-min-age-days (default 3); older "
+        "entries removed. Logs regenerate and never hold login state or user data.",
+    ),
 )
